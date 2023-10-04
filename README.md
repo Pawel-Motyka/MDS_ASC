@@ -1,12 +1,13 @@
 ## Mapping the space of altered states of consciousness
 
-Paweł Motyka<sup>1</sup> <sup>2</sup>, Paweł Orłowski <sup>3</sup>, <sup>4</sup>
+Paweł Motyka<sup>1</sup> <sup>2</sup>, Paweł Orłowski <sup>3</sup> <sup>4</sup>
 <br/>
 <br/>
 <sup>1</sup>Faculty of Psychology, University of Warsaw, Poland <br/>
 <sup>2</sup>Institute of Psychology, Polish Academy of Sciences, Poland <br/>
 <sup>3</sup> Nencki Institute of Experimental Biology, Polish Academy of Sciences, Warsaw, Poland <br/>
 <sup>4</sup> Institute of Psychology & Centre for Brain Research, Jagiellonian University, Krakow, Poland <br/>
+<br/>
 Corresponding author: Paweł Motyka, e-mail: pmotyka@psych.pan.pl 
 <br/>
 <br/>
