@@ -1,6 +1,6 @@
 ## Mapping the space of altered states of consciousness
 
-Paweł Motyka<sup>1</sup> <sup>2</sup>, Michał Gacka<sup>2</sup> , Paweł Orłowski <sup>3</sup> <sup>4</sup>
+Paweł Motyka<sup>1</sup> <sup>2</sup>, Michał Gacka<sup>2</sup> , Paweł Orłowski <sup>3</sup> <sup>4</sup> 
 <br/>
 <br/>
 <sup>1</sup>Faculty of Psychology, University of Warsaw, Poland <br/>
