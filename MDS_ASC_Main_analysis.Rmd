@@ -1,0 +1,2235 @@
+---
+title: <font size="5"><strong> Mapping the space of altered states of consciousness - Main Analysis</strong></font>
+author: <br> <font size="4"> Paweł Motyka & Paweł Orłowski </font> <br> pmotyka@psych.pan.pl  <br> 
+date: <font size="3"> April 2024  </font>
+output: html_document
+chunk_output_type: console
+editor_options: 
+  chunk_output_type: console
+--- 
+
+&nbsp;
+<br>
+<font size="4">
+**List of sections**:
+
+1. Load data and perform exclusions [S1](#S1)
+2. Basic demographic and behavioral data [S2](#S2)
+3. Create dissimilarity matrices for each subject [S3](#S3)
+4. Create average dissimilarity matrix for entire sample [S4](#S4)
+5. Heatmaps of per-state ratings and averaged dissimilarity barplots [S5](#S5)
+6. Stress values with increasing dimensionality [S6](#S6)
+7. 2D Multidimensional scaling [S7](#S7)
+8. 3D Multidimensional scaling [S8](#S8)
+9. Baseline-centered polar coordinates model [S9](#S9)
+10. Prepare data for Python-based models - additional exclusions [S11](#S11)
+
+<a name="S1"></a>
+&nbsp;
+
+**1. Load data and perform exclusions** 
+
+```{r, message = FALSE,  warning = FALSE}
+
+# Load required packages
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(smacof)
+library(plotly)
+library(MASS)
+library(fitdistrplus)
+library(extremevalues)
+library(here)
+library(patchwork)
+library(scatterplot3d)
+library(rgl)
+library(gridExtra)
+library(ggrepel)
+library(viridis)
+
+# Set working directory
+mds_dir <- here::here()
+
+# Load data
+df_full  <- read.csv(file = paste0(mds_dir,"/MDS_ASC_data"), sep = "\t", header = TRUE, quote = "\"")
+
+# Basic demographic stats before filtering
+df_full %>%
+  summarise(
+    Number_of_Participants = n(),
+    Mean_Age = mean(Age, na.rm = TRUE),
+    SD_Age = sd(Age, na.rm = TRUE),
+    Male_Participants = sum(Gender == "Man"),
+    Female_Participants = sum(Gender == "Woman"),
+    Other_Participants = sum(Gender == "Other")
+  ) %>%
+  print()
+
+## Perform exclusions according to the preregistered criteria
+
+#(1) Average response time per dissimilarity rating below 2 seconds
+#hist(df_full$time_per_subs, breaks = 100)
+cat("Response time above 2s:", sum(df_full$time_per_subs < 2, na.rm = TRUE), "\n")
+df_filtered <- filter(df_full,  time_per_subs > 2)
+
+
+#(2) Inaccurate responses to the two control questions
+
+# Test 1
+# hist(df_filtered$test1, breaks = 100, xlim = c(0,100), ylim = c(0,50))
+cat("Uncorrect response to test1:", sum(df_filtered$test1 < 99, na.rm = TRUE), "\n")
+df_filtered <- filter(df_filtered,  test1 >= 99) 
+
+# Test2
+# hist(df_filtered$test2, breaks = 100, xlim = c(0,7), ylim = c(0,100))
+cat("Uncorrect response to test2:", sum(df_filtered$test2 > 1, na.rm = TRUE), "\n")
+df_filtered <- filter(df_filtered,  test2 <= 1) # liberal (2nd step)
+
+# Recode ID variable
+df_filtered$ID <- 1:length(df_filtered$ID)
+
+# Basic demographic stats after filtering
+df_filtered %>%
+  summarise(
+    Number_of_Participants = n(),
+    Male = sum(Gender == "Man"),
+    Female = sum(Gender == "Woman"),
+    Other = sum(Gender == "Other"),
+    Mean_Age = mean(Age, na.rm = TRUE),
+    SD_Age = sd(Age, na.rm = TRUE),
+  ) %>%
+  print()
+
+```
+
+<br>
+<a name="S2"></a>
+&nbsp;
+
+**2. Basic demographic and behavioral data** 
+
+```{r, fig.width= 7, fig.height= 4}
+
+# Summary statistics and histogram for age
+summary(df_filtered$Age)
+ggplot(df_filtered, aes(x = Age)) +
+  geom_histogram(binwidth = 5, fill = "#21918c", color = "black", alpha = 0.7) +
+  labs(title = "Age Distribution",
+       x = "Age",
+       y = "Frequency")+
+  theme_minimal()
+
+# Summary statistics and barplot for gender distribution
+df_filtered$Gender <- factor(df_filtered$Gender, levels = c("Woman", "Man", "Other"))
+
+table(df_filtered$Gender)
+ggplot(df_filtered, aes(x = Gender, fill = Gender)) +
+  geom_bar() +
+  scale_fill_viridis_d() +  # Add this line to use viridis colors
+  labs(title = "Gender Distribution",
+       x = "Gender",
+       y = "Count") +
+  theme_minimal()
+
+#convert education to factor, set levles
+df_filtered$Education <- factor(df_filtered$Education, 
+                                           levels = c("Primary School",
+                                                      "Middle School",
+                                                      "Vocational",
+                                                      "High School",
+                                                      "Bachelor's",
+                                                      "Master's",
+                                                      "PhD and higher"))
+# Summary statistics for and barplot for education level
+table(df_filtered$Education)
+ggplot(df_filtered, aes(x = Education, fill = Education)) +
+  geom_bar() +
+  scale_fill_viridis_d() + 
+  labs(title = "Education Distribution",
+       x = "Education",
+       y = "Count")+
+  theme(axis.text.x = element_text(size = 10, angle = 35, hjust = 1))+
+  theme_minimal()
+
+#convert place of residence to factor, set levles
+df_filtered$Residence <- factor(df_filtered$Residence, 
+                                           levels = c("Village",
+                                                      "City of up to 50k",
+                                                      "City 50 to 150k",
+                                                      "City 150 to 500k",
+                                                      "City of over 500k"))
+
+# Summary statistics for and plot for place of residence
+table(df_filtered$Residence)
+ggplot(df_filtered, aes(x = Residence, fill = Residence)) +
+  geom_bar() +
+  labs(title = "Place of Residence Distribution",
+       x = "Place of Residence",
+       y = "Count")+
+  scale_fill_viridis_d() + 
+  theme(axis.text.x = element_text(size = 10, angle = 35, hjust = 1))+
+  theme_minimal()
+
+# Summary statistics and plot for number of compared substances
+summary(df_filtered$Subs_N)
+ggplot(df_filtered, aes(x = Subs_N)) +
+  geom_histogram(binwidth = 1, fill = "#21918c", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of number of compared substances",
+       x = "Number of compared substances",
+       y = "Number of participants")+
+    scale_x_continuous(breaks = 4:15)+
+  theme_minimal()
+
+# Summary statistics and barplot for history of psychiatric diagnosis
+table(df_filtered$EverDiagnosis)
+ggplot(df_filtered, aes(x = EverDiagnosis, fill = EverDiagnosis)) +
+  geom_bar() +
+  labs(title = "History of Psychiatric Diagnosis",
+      x = "Ever diagnosis",
+       y = "Count")+
+  scale_fill_viridis_d() + 
+  theme(axis.title = element_text(size = 12), 
+        plot.title = element_text(size = 12),
+        legend.title = element_text(size = 12))+
+  theme_minimal()
+
+# Summary statistics and barplot for History of use of drugs with psychoactive effects
+table(df_filtered$Medication)
+ggplot(df_filtered, aes(x = Medication, fill = Medication)) +
+  geom_bar() +
+  labs(title = "History of use of drugs with psychoactive effects",
+       x = "Ever Medication",
+       y = "Count")+
+  scale_fill_viridis_d() + 
+  theme(axis.title = element_text(size = 12), 
+        plot.title = element_text(size = 12),
+        legend.title = element_text(size = 12))+
+  theme_minimal()
+```
+
+<br>
+<a name="S3"></a>
+&nbsp;
+
+**3. Create dissimilarity matrices for each subject** 
+
+```{r, message = FALSE}
+
+# Create a sample data frame
+substance_codes <- c("Baseline", "Alc", "MJ", "MDMA", "Amf", "LSD", "Psy", "Mef", "Coc", 
+                     "Alp", "Ket", "DMT", "N2O", "DXM", "Cod", "Tra", "Her", "Salv", 
+                     "GHB", "Dat", "Ben", "2CB", "Diph")
+
+# adjust name column name
+colnames(df_filtered) <- gsub("X2CB", "2CB", colnames(df_filtered))
+
+# Create all combinations of substance codes
+combinations <- expand.grid(Var1 = substance_codes, Var2 = substance_codes, stringsAsFactors = FALSE)
+combinations <- subset(combinations, Var1 != Var2)
+combinations <- subset(combinations, Var1 < Var2)
+column_names <- apply(combinations, 1, function(x) paste(x, collapse = "_"))
+
+
+# Loop through each subject's data
+for (i in as.numeric(df_filtered$ID)) {
+  subject_id <- i
+  
+  # Extract data for the current subject
+  subject_data <- df_filtered[df_filtered$ID == subject_id, ]
+  
+  # Create a data frame with substance codes as both rows and columns
+  subject_df <- data.frame(matrix(NA, nrow = length(substance_codes), ncol = length(substance_codes),dimnames = list(substance_codes, substance_codes)))
+  
+colnames(subject_df) <- substance_codes
+rownames(subject_df) <- substance_codes
+  
+  # Populate the data frame with values from the corresponding columns
+  for (code1 in substance_codes) {
+    for (code2 in substance_codes) {
+      col_name1 <- paste(code1, code2, sep = "")
+      col_name2 <- paste(code2, code1, sep = "")
+      if (col_name1 != col_name2) {
+        
+        if (!is.na(subject_data[[col_name1]])) {
+          subject_df[code1, code2] <- subject_data[[col_name1]]
+          subject_df[code2, code1] <- subject_data[[col_name1]]
+          
+        } else if (!is.na(subject_data[[col_name2]])) {
+          subject_df[code1, code2] <- subject_data[[col_name2]]
+          subject_df[code2, code1] <- subject_data[[col_name2]]
+        }
+      }
+    }
+  }
+  
+  # Assign the subject's data frame to the global environment with a unique name
+  assign(paste("df_", subject_id, sep = ""), subject_df, envir = .GlobalEnv)
+}
+
+# Remove redundant file
+rm(subject_df)
+rm(subject_data)
+
+# Create a list of all individual data frames
+list_df <- lapply(as.numeric(df_filtered$ID), function(i) {
+  df_name <- paste("df_", i, sep = "")
+  if (exists(df_name, envir = .GlobalEnv)) {
+    get(df_name)
+  } else {
+    NULL
+  }
+})
+
+```
+<br>
+<a name="S4"></a>
+&nbsp;
+
+**4. Create average dissimilarity matrix for entire sample** 
+
+```{r}
+
+## Derive averaged dissimilarity ratings and number of comparisons
+
+# Initialization of empty arrays
+comparisons_n <- matrix(0, nrow = ncol(list_df[[1]]), ncol = ncol(list_df[[1]]))
+dt_23 <- comparisons_n
+
+# Calculating average values and number of comparisons
+for (i in 1:length(list_df)) {
+  df <- list_df[[i]]
+  comparisons_n[!is.na(df)] <- comparisons_n[!is.na(df)] + 1
+  dt_23[!is.na(df)] <- dt_23[!is.na(df)] + as.numeric(df[!is.na(df)])
+}
+dt_23 <- dt_23 / comparisons_n
+
+# Adding names to rows and columns
+colnames(dt_23) <- substance_codes
+rownames(dt_23) <- substance_codes
+colnames(comparisons_n) <- substance_codes
+rownames(comparisons_n) <- substance_codes
+
+# Save the final matrix
+dt <- dt_23
+rm(df)
+
+# Remove states without the expected number of obtained ratings (Diphenidine,Datura,Benzydamine)
+dt <- dt[!(rownames(dt) %in% c("Diph", "Dat","Ben")), ]
+dt <- dt[, !(colnames(dt) %in% c("Diph", "Dat","Ben"))]
+
+
+## Derive additional descriptive varialbes (proportion of ratings & average dissimilarity rating)
+
+# Initialization of empty data frame
+descriptive_df <- data.frame(ID = numeric(0), Proportion_of_ratings = numeric(0), Average_dissimilarity = numeric(0))
+
+# Loop through each element in list_df
+for (i in seq_along(list_df)) {
+  
+  # Extract the current dataframe
+  current_df <- list_df[[i]]
+  current_df <- as.data.frame(lapply(current_df, as.numeric))
+  
+  # Calculate Proportion_of_ratings
+  prop_ratings <- sum(!is.na(current_df)) / (length(current_df) * length(current_df))
+  
+  # Calculate Average_dissimilarity
+  avg_distance <- mean(as.matrix(current_df), na.rm = TRUE)
+  
+  # Append the results to the descriptive_df
+  descriptive_df <- rbind(descriptive_df, data.frame(ID = i, Proportion_of_ratings = prop_ratings, Average_dissimilarity = avg_distance))
+}
+
+rm(current_df)
+## Optional: remove individual data frames as separate objects
+objects_to_remove <- paste("df_", 1:739, sep = "")
+rm(list = objects_to_remove, envir = .GlobalEnv)
+
+```
+<br>
+<a name="S5"></a>
+&nbsp;
+
+**5. Heatmaps of per-state ratings and averaged dissimilarity barplots**
+
+```{r}
+
+# Define colors for different states
+point_col <- c(
+  Baseline = "#2B2B2B",    
+  Alc = "#8A99BF", #Alcohol      
+  MJ = "#327D43",  #Marijuana         
+  MDMA = "#7B3894",#MDMA        
+  Amf = "#8B2B2B", #Amphetamine       
+  LSD = "#5998BA", #LSD         
+  Psy = "#5DADB3", #Psylocybine
+  Mef = "#A23E71", #Mephedrone
+  Coc = "#BF436E", #Cocaine
+  Alp = "#6B86B0", #Aplrazolam
+  Ket = "#6861C7", #Ketamine
+  DMT = "#108BB8", #DMT
+  N2O = "#505CB9", #Nitrous Oxide  
+  DXM = "#7A65A8", #DXM
+  Cod = "#ACA232", #Codeine
+  Tra = "#AC845F", #Tramadol
+  Her = "#755B28", #Heroine/Morphine
+  Salv = "#AFA0BD", #Salvia Divinorum
+  GHB = "#617991", #GHB
+  `2CB` = "#6AA4BA"  #2CB
+)
+
+labels <- c(
+  "Baseline" = "Baseline",
+  "Alc" = "Alcohol",
+  "MJ" = "Marijuana",
+  "MDMA" = "MDMA",
+  "Amf" = "Amphetamine",
+  "LSD" = "LSD",
+  "Psy" = "Psilocybin",
+  "Mef" = "Mephedrone",
+  "Coc" = "Cocaine",
+  "Alp" = "Alprazolam",
+  "Ket" = "Ketamine",
+  "DMT" = "DMT",
+  "N2O" = "Nitrous oxide",
+  "DXM" = "DXM",
+  "Cod" = "Codeine",
+  "Tra" = "Tramadol",
+  "Her" = "Heroin",
+  "Salv" = "Salvia",
+  "GHB" = "GHB/GBL",
+  "Dat" = "Datura",
+  "Ben" = "Benzydamine",
+  "2CB" = "2C-B",
+  "Diph" = "Diphenidine"
+)
+
+#Create heatmap of number of ratings for all comparisons
+data_for_heatmap <- reshape2::melt(comparisons_n)
+
+data_for_heatmap$Var1 <- factor(data_for_heatmap$Var1, levels = rev(c( "Baseline", "MJ","Alc", "MDMA", "Psy", "LSD", "Amf", "Coc", "Mef", "Alp", "Ket","2CB","N2O", "DMT","Cod", "Tra", "DXM","GHB", "Her", "Salv", "Ben","Dat", "Diph")))
+data_for_heatmap$Var2 <- factor(data_for_heatmap$Var2, levels = c( "Baseline", "MJ","Alc", "MDMA", "Psy", "LSD", "Amf", "Coc", "Mef", "Alp", "Ket","2CB","N2O", "DMT","Cod", "Tra", "DXM","GHB", "Her", "Salv", "Ben","Dat", "Diph"))
+
+ggplot(data_for_heatmap, aes(x = Var2, y = Var1, fill = value)) +
+  geom_tile() +
+  scale_fill_gradientn(colours = c("white", "orange", "red"),
+                       values = scales::rescale(c(0, 150, 150, 150, 800)))+
+  geom_text(aes(label = value), vjust = 0.6, size = 2.5, colour = "#333333") + 
+  labs(x = "", y = "") +
+  theme_minimal() + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10, colour = "black" ),
+    axis.text.y = element_text(size = 10, colour = "black"),
+    legend.position = "none",
+    plot.background = element_rect(fill = "white")) +
+  scale_x_discrete(labels = labels) +  
+  scale_y_discrete(labels = labels)
+
+#Create heatmap of number of ratings for subset of substances
+
+data_for_heatmap_filtered <- data_for_heatmap %>%
+  filter(!(Var1 %in% c("Ben", "Dat", "Diph")) & !(Var2 %in% c("Ben", "Dat", "Diph")))
+
+ggplot(data_for_heatmap_filtered, aes(x = Var2, y = Var1, fill = value)) +
+  geom_tile() +
+  scale_fill_gradientn(colours = c("white", "orange", "red"),
+                       values = scales::rescale(c(0, 150, 150, 150, 800)))+
+  geom_text(aes(label = value), vjust = 0.6, size = 2.5, colour = "#333333") + 
+  labs(x = "", y = "") +
+  theme_minimal() + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10, colour = "black" ),
+    axis.text.y = element_text(size = 10, colour = "black"),
+    legend.position = "none",
+    plot.background = element_rect(fill = "white")) +
+  scale_x_discrete(labels = labels) +  
+  scale_y_discrete(labels = labels)
+
+# Create barplots of average disimilarity
+dt_long <- reshape2::melt(dt, varnames = "group", value.name = "value")
+colnames(dt_long)[2] <- 'plot'
+
+labs <- c("Baseline", "Alc", "MJ", "MDMA", "Amf", "LSD", "Psy", "Mef", "Coc", 
+          "Alp", "Ket", "DMT", "N2O", "DXM", "Cod", "Tra", "Her", "Salv", 
+          "GHB", "2CB")
+
+for (val in labs) {
+  subset_data <- dt_long[dt_long$group == val, ]
+
+  subset_data$plot <- factor(subset_data$plot, levels = c('Baseline', 'Alp', 'Alc', 'GHB', 'Tra', 'Cod', 'Her', 'Coc', 'Amf', 'Mef', 'MDMA', 'MJ', 'N2O', 'DXM', 'Ket', 'Salv', '2CB', 'Psy', 'LSD', 'DMT'))
+  subset_data[is.nan(subset_data$value), "value"] <- 0
+  subset_data$transformed_D <- (exp(subset_data$value/100) - 1)
+
+
+  p=ggplot(subset_data, aes(x = plot, y = transformed_D, fill = plot)) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  labs(title = labels[val], x = "", y = "Mean disimilarity") +
+  scale_fill_manual(values = point_col) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.background = element_rect(fill = "white"),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"))+
+  scale_y_continuous(limits = c(exp(0)-1, exp(1)-1), 
+                     breaks = exp(seq(0,1, by = 0.1))-1,
+                     labels = c(0,10,20,30,40,50,60,70,80,90,100))+
+  scale_x_discrete(labels = labels)
+  print(p)                   
+}
+
+
+# Version with all plots
+# Initialize an empty list to store plots
+plot_list <- list()
+
+# Loop through each value in 'labs'
+for (val in labs) {
+  subset_data <- dt_long[dt_long$group == val, ]
+  subset_data$plot <- factor(subset_data$plot, levels = c('Baseline', 'Alp', 'Alc', 'GHB', 'Tra', 'Cod', 'Her', 'Coc', 'Amf', 'Mef', 'MDMA', 'MJ', 'N2O', 'DXM', 'Ket', 'Salv', '2CB', 'Psy', 'LSD', 'DMT'))
+  subset_data[is.nan(subset_data$value), "value"] <- 0
+  subset_data$transformed_D <- (exp(subset_data$value/100) - 1)
+  
+  # Create the ggplot object for the current subset of data
+  p <- ggplot(subset_data, aes(x = plot, y = transformed_D, fill = plot)) +
+    geom_bar(stat = "identity", position = "dodge", color = "black") +
+    labs(title = labels[val], x = "", y = "Mean disimilarity") +
+    scale_fill_manual(values = point_col) +
+    theme_minimal() +
+    theme(legend.position = "none",
+          plot.background = element_rect(fill = "white"),
+          axis.text.x = element_text(angle = 45, hjust = 1, size = 6, colour = "black"),
+          axis.text.y = element_text(size = 6, colour = "black"))+
+    scale_y_continuous(limits = c(exp(0)-1, exp(1)-1), 
+                       breaks = exp(seq(0,1, by = 0.1))-1,
+                       labels = c(0,10,20,30,40,50,60,70,80,90,100))+
+    scale_x_discrete(labels = labels)
+  
+  # Append the plot to the list
+  plot_list[[val]] <- p
+}
+
+desired_sequence <- c("Baseline", "Alp", "Alc", "GHB", "Tra", "Cod", "Her", "Coc", "Amf", "Mef", "MDMA", "MJ", "N2O", "DXM", "Ket", "Salv", "2CB", "Psy", "LSD", "DMT")
+
+# Reorder the plot_list according to the desired sequence
+plot_list_reordered <- plot_list[desired_sequence]
+
+# Combine all the plots into one big plot
+big_plot <- wrap_plots(plotlist = plot_list_reordered, nrow = 4, ncol = 5)
+
+## 12 x 10 cm export
+big_plot <- wrap_plots(plotlist = plot_list_reordered, nrow = 5, ncol = 4)
+#print(big_plot)
+
+
+#Create barplot - number of users of particular substances
+columns_to_plot <- c("List.MJ", "List.Alc", "List.MDMA", "List.Psy", "List.LSD", "List.Amf", 
+                      "List.Coc", "List.Mef", "List.Alp", "List.Ket", "List.2CB", "List.N2O",
+                      "List.DMT", "List.Cod", "List.Tra", "List.DXM",  "List.GHB", "List.Her",
+                      "List.Salv", "List.Ben", "List.Dat", "List.Diph")
+
+data_for_plot <- data.frame(
+  Variable = factor(columns_to_plot, levels = columns_to_plot),
+  Count = sapply(df_filtered[, columns_to_plot], function(x) sum(x == "Yes"))
+)
+
+custom_labels <- c(
+  "List.Alc" = "Alcohol",
+  "List.MJ" = "Marijuana",
+  "List.MDMA" = "MDMA",
+  "List.Amf" = "Amphetamine",
+  "List.LSD" = "LSD",
+  "List.Psy" = "Psilocybin",
+  "List.Mef" = "Mephedrone",
+  "List.Coc" = "Cocaine",
+  "List.Alp" = "Alprazolam",
+  "List.Ket" = "Ketamine",
+  "List.DMT" = "DMT",
+  "List.N2O" = "Nitrous oxide",
+  "List.DXM" = "DXM",
+  "List.Cod" = "Codeine",
+  "List.Tra" = "Tramadol",
+  "List.Her" = "Heroine",
+  "List.Salv" = "Salvia divinorum",
+  "List.GHB" = "GHB/GBL",
+  "List.Dat" = "Datura",
+  "List.Ben" = "Benzydamine",
+  "List.2CB" = "2C-B",
+  "List.Diph" = "Diphenidine"
+)
+
+data_for_plot$Variable <- factor(data_for_plot$Variable, levels = columns_to_plot)
+
+ggplot(data_for_plot, aes(x = Variable, y = Count, fill = Variable)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = Count), vjust = -0.5, size = 3) +  
+  labs(x = "",y = "Number of Users") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.position = "none",
+    plot.background = element_rect(fill = "white"),
+    axis.title.y = element_text(size = 12)) +
+  scale_x_discrete(labels = custom_labels) +
+  scale_fill_manual(
+    values = c(
+      "List.Alc" = "#8A99BF",
+      "List.MJ" = "#327D43",
+      "List.MDMA" = "#7B3894",
+      "List.Amf" = "#8B2B2B",
+      "List.LSD" = "#5998BA",
+      "List.Psy" = "#5DADB3",
+      "List.Mef" = "#A23E71",
+      "List.Coc" = "#BF436E",
+      "List.Alp" = "#6B86B0",
+      "List.Ket" = "#6861C7",
+      "List.DMT" = "#108BB8",
+      "List.N2O" = "#505CB9",
+      "List.DXM" = "#7A65A8",
+      "List.Cod" = "#ACA232",
+      "List.Tra" = "#AC845F",
+      "List.Her" = "#755B28",
+      "List.Salv" = "#AFA0BD",
+      "List.GHB" = "#617991",
+      "List.Dat" = "#7DAB23",
+      "List.Ben" = "#6B8E23",
+      "List.2CB" = "#6AA4BA",
+      "List.Diph" = "#6A5ACD"
+    )
+  )
+
+
+#Create Barplots - confidence ratings
+columns_to_plot <- c("BaselineConf", "MJConf", "AlcConf", "MDMAConf", "AmfConf", "LSDConf",
+  "PsyConf", "MefConf",  "CocConf", "AlpConf", "KetConf", "DMTConf", "N2OConf", "DXMConf",
+  "CodConf", "TraConf",  "HerConf", "SalvConf", "GHBConf", "2CBConf")
+
+data_for_plot <- df_filtered[columns_to_plot]
+
+data_for_plot_numeric <- data_for_plot %>%
+  mutate(across(everything(), ~ as.numeric(as.character(.))))
+
+means <- data_for_plot_numeric %>%
+  summarise(across(everything(), ~ mean(., na.rm = TRUE)))
+
+errors <- data_for_plot_numeric %>%
+  summarise(across(everything(), ~ sd(., na.rm = TRUE)))
+
+custom_labels <- c(
+  "List.Alc" = "Alcohol",
+  "List.MJ" = "Marijuana",
+  "List.MDMA" = "MDMA",
+  "List.Amf" = "Amphetamine",
+  "List.LSD" = "LSD",
+  "List.Psy" = "Psilocybin",
+  "List.Mef" = "Mephedrone",
+  "List.Coc" = "Cocaine",
+  "List.Alp" = "Alprazolam",
+  "List.Ket" = "Ketamine",
+  "List.DMT" = "DMT",
+  "List.N2O" = "Nitrous oxide",
+  "List.DXM" = "DXM",
+  "List.Cod" = "Codeine",
+  "List.Tra" = "Tramadol",
+  "List.Her" = "Heroine",
+  "List.Salv" = "Salvia divinorum",
+  "List.GHB" = "GHB/GBL",
+  "List.Dat" = "Datura",
+  "List.Ben" = "Benzydamine",
+  "List.2CB" = "2C-B",
+  "List.Diph" = "Diphenidine"
+)
+
+data_for_plot_graph_long <- pivot_longer(means, cols = everything(), names_to = "Substance", values_to = "Mean")
+errors_long <- pivot_longer(errors, cols = everything(), names_to = "Substance", values_to = "Error")
+data_for_plot_graph_long <- left_join(data_for_plot_graph_long, errors_long, by = "Substance")
+
+
+data_for_plot_graph_long <- data_for_plot_graph_long %>%
+  filter(Substance %in% columns_to_plot) %>%
+  mutate(Substance = factor(Substance, levels = columns_to_plot))
+
+data_for_plot_graph_long$Substance <- sub("....$", "", data_for_plot_graph_long$Substance)
+
+data_for_plot_graph_long$Substance <- factor(data_for_plot_graph_long$Substance, levels = c("Baseline", "MJ","Alc", "MDMA", "Psy", "LSD", "Amf", "Coc", "Mef", "Alp", "Ket","2CB","N2O", "DMT","Cod", "Tra", "DXM","GHB", "Her", "Salv"))
+
+ggplot(data_for_plot_graph_long, aes(x = Substance, y = Mean, fill = Substance)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin = Mean - Error, ymax = Mean + Error), width = 0.2) +
+  scale_fill_manual(values = point_col) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("Substance") +
+  ylab("Confidence") +
+  ggtitle("Average Confidence Ratings")+
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.position = "none",
+    plot.background = element_rect(fill = "white"),
+    axis.title.y = element_text(size = 12))+
+    scale_x_discrete(labels = labels)+
+    ylim(0,7.5)
+
+
+rm(subset_data, labs, dt_long, data_for_heatmap_filtered,data_for_heatmap)
+
+
+# Sort levels in decreasing order of mean values
+ordered_levels_dec <- data_for_plot_graph_long %>%
+  group_by(Substance) %>%
+  summarize(mean_value = mean(Mean)) %>%
+  arrange(desc(mean_value)) %>%
+  pull(Substance)
+
+# Create bar plots with sorted levels (decreasing)
+ggplot(data_for_plot_graph_long, aes(x = factor(Substance, levels = ordered_levels_dec), y = Mean, fill = Substance)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin = Mean - Error, ymax = Mean + Error), width = 0.2) +
+  scale_fill_manual(values = point_col) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab("Substance") +
+  ylab("Confidence") +
+  ggtitle("Average Confidence Ratings") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.position = "none",
+    plot.background = element_rect(fill = "white"),
+    axis.title.y = element_text(size = 12)) +
+  scale_x_discrete(labels = labels) +
+  ylim(0, 7.5)
+
+```
+
+<br>
+<a name="S6"></a>
+&nbsp;
+
+**6. Stress values with increasing dimensionality**
+
+```{r, fig.width= 8, fig.height= 5}
+
+# Initialize a vector to store stress values
+stress_full <- numeric(10)
+
+# Loop over dimensions
+for (i in 1:10) {
+  # Create "full" model with ndim = i
+  mf <- mds(dt, ndim = i, type = "ordinal", init = "torgerson") # full data
+  
+  # Save stress values in respective vectors
+  stress_full[i] <- mf$stress
+}
+
+# Set up the layout for 1x1 grid of plots
+par(mfrow = c(1, 1))
+
+## Create a plot with stress values (all states)
+stress_full <- stress_full
+dimensions <- 1:10
+d_plot <- data.frame(Dimensions = dimensions, Stress = stress_full)
+
+ggplot(d_plot, aes(x = Dimensions, y = Stress)) +
+  geom_line(size = 1, color = "black") +
+  geom_point(size = 3, color = "black") +
+  ylim(0, 0.42) +
+  geom_hline(yintercept = 0.1, linetype = "dashed", color = "#5A95D2FF", size = 0.8) +
+  geom_hline(yintercept = 0.05, linetype = "dashed", color = "#29AF7FFF", size = 0.8) +
+  scale_x_continuous(breaks = 1:10) +
+  labs(
+    title = " ",
+    x = "Number of Dimensions",
+    y = "Stress"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 16),  # Set a uniform size for all text elements
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.title = element_text(),
+    axis.text = element_text(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 1)
+  )
+
+
+# Define the new order (for visualization purposes)
+states_order <- c('Baseline', 'Alp', 'Alc', 'GHB', 'Tra', 'Cod', 'Her', 'Coc', 'Amf', 'Mef', 'MDMA', 'MJ', 'N2O', 'DXM', 'Ket', 'Salv', '2CB', 'Psy', 'LSD', 'DMT')
+
+# Create a new empty data frame with the desired order
+dtr <- data.frame(matrix(NA, nrow = length(states_order), ncol = length(states_order)))
+rownames(dtr) <- states_order
+colnames(dtr) <- states_order
+
+# Fill the new data frame with reordered values
+for (i in states_order) {
+  for (j in states_order) {
+    if (i %in% rownames(dt) && j %in% colnames(dt)) {
+      dtr[i, j] <- dt[i, j]
+    }
+  }
+}
+
+# Ensure the result is a data frame
+dtr <- as.data.frame(dtr)
+
+# define colors for reversed order
+point_col_ord <- c(
+  Baseline = "#2B2B2B",
+  Alp = "#6B86B0", #Alprazolam
+  Alc = "#8A99BF", #Alcohol
+  GHB = "#617991", #GHB
+  Tra = "#AC845F", #Tramadol
+  Cod = "#ACA232", #Codeine
+  Her = "#755B28", #Heroin/Morphine
+  Coc = "#BF436E", #Cocaine
+  Amf = "#8B2B2B", #Amphetamine
+  Mef = "#A23E71", #Mephedrone
+  MDMA = "#7B3894",#MDMA
+  MJ = "#327D43",  #Marijuana
+  N2O = "#505CB9", #Nitrous Oxide
+  DXM = "#7A65A8", #DXM
+  Ket = "#6861C7", #Ketamine
+  Salv = "#AFA0BD",#Salvia Divinorum
+  `2CB` = "#6AA4BA",#2C-B
+  Psy = "#5DADB3", #Psilocybin
+  LSD = "#5998BA", #LSD
+  DMT = "#108BB8"  #DMT
+)
+
+##  Visualize stress contribution by each state across n-dimensional models
+m2 <- mds(dtr, ndim = 2, type = "ordinal", init = "torgerson") 
+m2 <- m2$spp
+m3 <- mds(dtr, ndim = 3, type = "ordinal", init = "torgerson") 
+m3 <- m3$spp
+m4 <- mds(dtr, ndim = 4, type = "ordinal", init = "torgerson") 
+m4 <- m4$spp
+m5 <- mds(dtr, ndim = 5, type = "ordinal", init = "torgerson")
+m5 <- m5$spp
+m6 <- mds(dtr, ndim = 6, type = "ordinal", init = "torgerson") 
+m6 <- m6$spp
+m7 <- mds(dtr, ndim = 7, type = "ordinal", init = "torgerson") 
+m7 <- m7$spp
+dt_stress_contribution <- cbind(m2, m3, m4, m5, m6, m7)
+
+
+# Set up the plot area and margins
+par(mar = c(5, 5, 4, 12), xpd = TRUE)  # Increase right margin even more for legend
+
+# Create color palette (adjust n to match your number of substances)
+n <- nrow(dt_stress_contribution)
+
+# Create an empty plot
+plot(NULL, xlim = c(1, ncol(dt_stress_contribution)), ylim = range(dt_stress_contribution), 
+     xlab = "n-Dimensional Model", ylab = "Stress contribution", 
+     xaxt = "n", cex.lab = 1.2, cex.axis = 1.2, cex.main = 1.4)
+
+# Add custom x-axis
+axis(1, at = 1:ncol(dt_stress_contribution), labels = 2:7, cex.axis = 1.2)
+
+# Add grid
+grid(nx = ncol(dt_stress_contribution), ny = NULL, col = "lightgray", lty = "dotted")
+
+# Iterate through each row (substance)
+for (i in 1:nrow(dt_stress_contribution)) {
+  lines(1:ncol(dt_stress_contribution), dt_stress_contribution[i,], col = point_col_ord[i], type = "l", lwd = 2)
+}
+
+# Add legend with smaller text and more columns, moved further right
+legend("topright", legend = rownames(dt_stress_contribution), col = point_col_ord, 
+       lty = 1, lwd = 2, cex = 0.7, ncol = ceiling(n/25), 
+       inset = c(-0.55, 0), title = "States")
+
+
+##  Visualize stress contribution by each state across n-dimensional models (2nd solution)
+stress_full <- numeric(7)
+
+# Loop over dimensions
+for (i in 1:7) {
+  # Create "full" model with ndim = i
+  mf <- mds(dtr, ndim = i, type = "ordinal", init = "torgerson") # full data
+  
+  # Create "substances only" model with ndim = i
+  # Save stress values in respective vectors
+  stress_full[i] <- mf$stress
+}
+
+stress_full
+par(mfrow=c(1,1))
+# Create the stacked bar plot with specified colors
+barplot(as.matrix(dt_stress_contribution), beside = TRUE, col = point_col_ord, main = "", xlab = "n-Dimensional Models", ylab = "Stress contribution")
+
+# Add legend with smaller text and more columns, moved further right
+legend("topright", legend = rownames(dt_stress_contribution), col = point_col_ord, 
+       lty = 1, lwd = 2, cex = 0.7, ncol = ceiling(n/25), 
+       inset = c(-0.55, 0), title = "States")
+
+# Removed redundant objects
+rm(mf)
+rm(d_plot)
+rm(dt_stress_contribution)
+rm(list = paste0("m", 2:7))
+
+```
+
+<br>
+<a name="S7"></a>
+&nbsp;
+**7. 2D Multidimensional scaling**
+
+```{r}
+
+## Perform 2D Multidimensional Scaling
+model_2d <- mds(dt, ndim = 2, type = "ordinal", init = "torgerson")
+
+# Calculate and display stress value
+stress_val = round(model_2d$stress,4)
+stress_val
+
+
+## Visualizations
+
+# Set up plotting parameters
+par(mfrow = c(1, 1))
+
+# Extract state names from data
+states <- rownames(dt)
+
+# Use stress per point directly
+sizes_o <- model_2d$spp
+
+# Apply square-root transformation to point sizes
+sizes_o <- sqrt(sizes_o)
+
+# Normalize point sizes for better visibility
+min_range <- 4
+max_range <- 9
+sizes_o <- ((sizes_o - min(sizes_o)) / (max(sizes_o) - min(sizes_o))) * (max_range - min_range) + min_range
+
+## Optional rotation
+coordinates <- model_2d$conf
+rotation = T
+angle = -35 
+
+if (rotation == T) {
+# Function to create a rotation matrix
+create_rotation_matrix <- function(angle_degrees) {
+  angle_radians <- angle_degrees * pi / 180
+  matrix(c(cos(angle_radians), -sin(angle_radians),
+           sin(angle_radians), cos(angle_radians)), 
+         nrow = 2, ncol = 2)}
+
+# Apply rotation to your MDS coordinates
+rotate_coords <- function(coords, angle_degrees) {
+  rotation_matrix <- create_rotation_matrix(angle_degrees)
+  rotated <- as.matrix(coords) %*% rotation_matrix
+  result <- as.data.frame(rotated)
+  colnames(result) <- colnames(coords)  # Preserve original column names
+  return(result)}
+
+# Rotate your MDS coordinates (change the angle)
+rotated_coords <- rotate_coords(model_2d$conf, angle)
+coordinates <- rotated_coords
+}
+
+# Create labeled MDS plot
+ggplot(data = as.data.frame(coordinates), aes(x = D1, y = D2)) +
+  geom_point(color = alpha(point_col, 0.5), size = sizes_o) + 
+  geom_point(color = point_col, size = 2) +                       
+  geom_text(aes(label = rownames(model_2d$conf)), hjust = -0.5, vjust = -0.5, size = 3) +
+  labs(title = "MDS Analysis", x = "Dimension 1", y = "Dimension 2") +
+  coord_fixed() +
+  xlim(-0.8, 1.1) + 
+  ylim(-1, 0.85) + 
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Create unlabeled MDS plot
+ggplot(data = as.data.frame(coordinates), aes(x = D1, y = D2)) +
+  geom_point(color = alpha(point_col, 0.5), size = sizes_o) + 
+  geom_point(color = point_col, size = 2) +                       
+  labs(title = "MDS Analysis", x = "Dimension 1", y = "Dimension 2") +
+  coord_fixed() +
+  xlim(-0.8, 1.1) + 
+  ylim(-1, 0.85) +
+  theme_minimal() +
+  theme(legend.position = "none")
+par(mfrow = c(1,1))
+
+# export size: 
+```
+
+<br>
+<a name="S8"></a>
+&nbsp;
+
+**8. 3D Multidimensional scaling**
+
+```{r,width=10, fig.height=7}
+
+## Perform 3D Multidimensional Scaling
+model3d <- mds(dt, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val = round(model3d$stress,4)
+stress_val
+
+## Visualization 
+## Create 2D mappings for 3D model
+# Set up the plotting area and adjust margins
+par(mfrow = c(1,3), mar = c(4, 4, 2, 1), oma = c(0, 0, 2, 0))
+# Plot the three configurations
+plot(model3d, plot.dim = c(1,2), main = "", col = point_col, pch = 19, cex = 1.2)
+title("D1 vs. D2", line = 0.5)
+plot(model3d, plot.dim = c(1,3), main = "", col = point_col, pch = 19, cex = 1.2)
+title("D1 vs. D3", line = 0.5)
+plot(model3d, plot.dim = c(2,3), main = "", col = point_col, pch = 19, cex = 1.2)
+title("D2 vs. D3", line = 0.5)
+# Add an overall title
+mtext("MDS Mappings - 3D model", outer = TRUE, cex = 1.2)
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+par(mfrow = c(1,1))
+# Extract state-stress contribution to visualize it as the size of point
+sizes_o <- model3d$spp
+# Apply square-root transformation to point sizes
+sizes_o <- sqrt(sizes_o)
+# Normalize point sizes for better visibility
+min_range <- 6
+max_range <- 16  # Adjust these values as needed
+sizes_o <- ((sizes_o - min(sizes_o)) / (max(sizes_o) - min(sizes_o))) * (max_range - min_range) + min_range
+
+## Create an interactive 3D scatter plot using plotly
+par(mfrow = c(1,1))
+# Create data frame with dimensions and sizes
+labels <- rownames(model3d$conf)
+
+# Ensure sizes_o is in the correct order
+names(sizes_o) <- labels
+sizes_o <- sizes_o[names(point_col_ord)]
+
+# Create a factor with levels in the desired order
+ordered_labels <- factor(labels, levels = names(point_col_ord))
+
+mds_df <- data.frame(
+  Dim1 = model3d$conf[, 1],
+  Dim2 = model3d$conf[, 2],
+  Dim3 = model3d$conf[, 3],
+  labels = labels,
+  sizes = sizes_o,
+  labels_factor = ordered_labels
+)
+
+# Calculate axis ranges
+axis_ranges <- apply(model3d$conf, 2, function(x) c(min(x), max(x)))
+max_range <- max(abs(axis_ranges))
+axis_limits <- c(-max_range, max_range)
+
+# Create the plot
+p <- plot_ly()
+# Add larger, semi-transparent points
+p <- p %>% add_trace(
+  data = mds_df,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col_ord,
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+# Add smaller, fully opaque points
+p <- p %>% add_trace(
+  data = mds_df,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col_ord,
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+# Add text labels
+p <- p %>% add_text(
+  data = mds_df,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+# Edit layout
+p <- p %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS (Stress =", round(model3d$stress,3), ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+# Print the plot
+p
+
+### Create an interactive 3D scatter plot with equally sized points
+
+p <- plot_ly(
+  data = mds_df,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col_ord,
+  type = 'scatter3d',
+  mode = 'markers')
+# Add text labels next to the data points with black color
+p <- p %>% add_text(
+  text = ~labels, ### OPTIONAL:labels_full (datapoints)
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black"))
+# Edit layout
+p <- p %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS (Stress =", round(model3d$stress,3), ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant"
+  )
+)
+# Print the plot
+p
+
+## Create an interactive 3D scatter plot using full labels (legend to be used in the paper)
+labels <- c(
+  "Baseline" = "Baseline",
+  "Alc" = "Alcohol",
+  "MJ" = "Marijuana",
+  "MDMA" = "MDMA",
+  "Amf" = "Amphetamine",
+  "LSD" = "LSD",
+  "Psy" = "Psilocybin",
+  "Mef" = "Mephedrone",
+  "Coc" = "Cocaine",
+  "Alp" = "Alprazolam",
+  "Ket" = "Ketamine",
+  "DMT" = "DMT",
+  "N2O" = "Nitrous oxide",
+  "DXM" = "DXM",
+  "Cod" = "Codeine",
+  "Tra" = "Tramadol",
+  "Her" = "Heroin/Morphine",
+  "Salv" = "Salvia",
+  "GHB" = "GHB/GBL",
+  "2CB" = "2C-B"
+)
+
+# Create dtf as a copy of dt
+dtf <- dt
+
+# Update column names
+colnames(dtf) <- sapply(colnames(dtf), function(x) ifelse(x %in% names(labels), labels[x], x))
+
+# Update row names if they exist
+if (!is.null(rownames(dtf))) {
+  rownames(dtf) <- sapply(rownames(dtf), function(x) ifelse(x %in% names(labels), labels[x], x))
+}
+
+# If there's a specific column containing these labels (let's say it's called 'substance'), update it
+if ('substance' %in% colnames(dtf)) {
+  dtf$substance <- sapply(dtf$substance, function(x) ifelse(x %in% names(labels), labels[x], x))
+}
+
+dtf <- as.data.frame(dtf)
+
+## Full labels-colors 
+point_col_ord_full <- c(
+  Baseline = "#2B2B2B",
+  Alprazolam = "#6B86B0",
+  Alcohol = "#8A99BF",
+  "GHB/GBL" = "#617991",
+  Tramadol = "#AC845F",
+  Codeine = "#ACA232",
+  "Heroin/Morphine" = "#755B28",
+  Cocaine = "#BF436E",
+  Amphetamine = "#8B2B2B",
+  Mephedrone = "#A23E71",
+  MDMA = "#7B3894",
+  Marijuana = "#327D43",
+  "Nitrous oxide" = "#505CB9",
+  DXM = "#7A65A8",
+  Ketamine = "#6861C7",
+  Salvia = "#AFA0BD",
+  "2C-B" = "#6AA4BA",
+  Psilocybin = "#5DADB3",
+  LSD = "#5998BA",
+  DMT = "#108BB8"
+)
+
+# Create data frame with dimensions
+model3d <- mds(dtf, ndim = 3, type = "ordinal", init = "torgerson")
+labels <- colnames(dtf)
+mds_df <- data.frame(
+  Dim1 = model3d$conf[, 1],
+  Dim2 = model3d$conf[, 2],
+  Dim3 = model3d$conf[, 3],
+  labels = labels)
+mds_df$labels_factor <- factor(labels, levels = names(point_col_ord_full)) #levels affects legend only
+
+# Calculate axis ranges
+axis_ranges <- apply(model3d$conf, 2, function(x) c(min(x), max(x)))
+max_range <- max(abs(axis_ranges))
+axis_limits <- c(-max_range, max_range)
+
+p <- plot_ly(
+  data = mds_df,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col_ord_full,
+  type = 'scatter3d',
+  mode = 'markers')
+# Add text labels next to the data points with black color
+p <- p %>% add_text(
+  text = ~labels, ### OPTIONAL:labels_full (datapoints)
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black"))
+# Edit layout
+p <- p %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS (Stress =", round(model3d$stress,3), ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant"
+  )
+)
+# Print the plot
+p
+
+## Alternative 3D visualization (scatterplot3D)
+par(mfrow = c(1,1))
+setupKnitr(autoprint = TRUE)
+
+## Perform 3D Multidimensional Scaling
+model3d <- mds(dt, ndim = 3, type = "ordinal", init = "torgerson")
+
+labels <- rownames(model3d$conf)
+mds_df <- data.frame(
+  Dim1 = model3d$conf[, 1],
+  Dim2 = model3d$conf[, 2],
+  Dim3 = model3d$conf[, 3],
+  labels = labels
+)
+
+# Calculate axis ranges
+axis_ranges <- apply(model3d$conf, 2, function(x) c(min(x), max(x)))
+max_range <- max(abs(axis_ranges))
+axis_limits <- c(-max_range, max_range)
+
+# Create a 3D scatter plot using scatterplot3d
+p1 <- scatterplot3d(mds_df$Dim1, mds_df$Dim2, mds_df$Dim3, 
+                    color = point_col[mds_df$labels], 
+                    type = "h", pch = 19, 
+                    xlab = "Dim1", ylab = "Dim2", zlab = "Dim3", 
+                    main = "Dim1 vs Dim2 vs Dim3",
+                    xlim = axis_limits, ylim = axis_limits, zlim = axis_limits,
+                    scale.y = 1, angle = 60)
+text(p1$xyz.convert(mds_df$Dim1, mds_df$Dim2, mds_df$Dim3), labels = mds_df$labels, pos = 4, cex = 0.6)
+
+# Create a 3D scatter plot using scatterplot3d with dimensions swapped
+p2 <- scatterplot3d(mds_df$Dim3, mds_df$Dim1, mds_df$Dim2, 
+                    color = point_col[mds_df$labels], 
+                    type = "h", pch = 19, 
+                    xlab = "Dim3", ylab = "Dim1", zlab = "Dim2", 
+                    main = "Dim3 vs Dim1 vs Dim2",
+                    xlim = axis_limits, ylim = axis_limits, zlim = axis_limits,
+                    scale.y = 1, angle = 60)
+text(p2$xyz.convert(mds_df$Dim3, mds_df$Dim1, mds_df$Dim2), labels = mds_df$labels, pos = 4, cex = 0.6)
+
+# Create a 3D scatter plot using scatterplot3d with dimensions swapped
+p3 <- scatterplot3d(mds_df$Dim1, mds_df$Dim3, mds_df$Dim2, 
+                    color = point_col[mds_df$labels], 
+                    type = "h", pch = 19, 
+                    xlab = "Dim1", ylab = "Dim3", zlab = "Dim2", 
+                    main = "Dim1 vs Dim3 vs Dim2",
+                    xlim = axis_limits, ylim = axis_limits, zlim = axis_limits,
+                    scale.y = 1, angle = 60)
+text(p3$xyz.convert(mds_df$Dim1, mds_df$Dim3, mds_df$Dim2), labels = mds_df$labels, pos = 4, cex = 0.6)
+```
+
+MDS dimensional evolution
+
+```{r}
+# Animate Dimensional Evolution with gganimate
+library(ggplot2)
+library(gganimate)
+
+# Prepare data for animation
+long_df <- mds_df %>%
+  mutate(ID = row_number()) %>%
+  pivot_longer(cols = starts_with("Dim"),
+               names_to = "Dimension",
+               values_to = "Value")
+
+# Plot and animate
+ggplot(long_df, aes(x = Dimension, y = Value, group = ID)) +
+  geom_line(aes(color = Value)) +
+  geom_point(aes(color = Value)) +
+  transition_states(Dimension, transition_length = 2, state_length = 1) +
+  labs(title = "4D MDS Evolution")
+
+
+```
+
+
+
+Temporary calculate distances
+
+```{r}
+
+# Function to calculate distances between all points in a configuration
+calculate_distances <- function(coords) {
+  n <- nrow(coords)
+  distances <- matrix(0, n, n)
+  rownames(distances) <- colnames(distances) <- rownames(coords)
+  
+  for(i in 1:n) {
+    for(j in 1:n) {
+      distances[i,j] <- sqrt(sum((coords[i,] - coords[j,])^2))
+    }
+  }
+  return(distances)
+}
+
+# Calculate distances for both models
+dist_2d <- calculate_distances(model_2d$conf)
+dist_3d <- calculate_distances(model3d$conf)
+
+# Create pairs dataframe manually
+substances <- rownames(dist_2d)
+pairs_list <- list()
+counter <- 1
+
+for(i in 1:(length(substances)-1)) {
+  for(j in (i+1):length(substances)) {
+    pairs_list[[counter]] <- data.frame(
+      from = substances[i],
+      to = substances[j],
+      dist_2d = dist_2d[substances[i], substances[j]],
+      dist_3d = dist_3d[substances[i], substances[j]]
+    )
+    counter <- counter + 1
+  }
+}
+
+# Combine all pairs into one dataframe
+pairs <- do.call(rbind, pairs_list)
+
+# Calculate relative distance change
+pairs$dist_change <- (pairs$dist_3d - pairs$dist_2d) / pairs$dist_2d * 100
+
+# Sort by absolute change
+pairs <- pairs[order(-abs(pairs$dist_change)), ]
+
+# Create a heatmap of distance changes
+distance_changes <- matrix(0, nrow = length(substances), ncol = length(substances))
+rownames(distance_changes) <- colnames(distance_changes) <- substances
+
+for(i in 1:nrow(pairs)) {
+  from <- pairs$from[i]
+  to <- pairs$to[i]
+  change <- pairs$dist_change[i]
+  distance_changes[from, to] <- change
+  distance_changes[to, from] <- change
+}
+
+# Convert to long format for ggplot
+distance_df <- reshape2::melt(distance_changes)
+colnames(distance_df) <- c("Substance1", "Substance2", "Change")
+
+# Create heatmap
+ggplot(distance_df, aes(x = Substance1, y = Substance2, fill = Change)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                      midpoint = 0,
+                      name = "% Change\n(3D vs 2D)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_blank()) +
+  labs(title = "Distance Changes Between Substances: 3D vs 2D Model",
+       subtitle = "Red = further apart in 3D, Blue = closer in 3D")
+
+# Print summary for focus substances
+cat("\nDetailed analysis of focus substances:\n")
+print(focus_pairs %>% 
+        arrange(desc(abs(dist_change))) %>%
+        mutate(across(where(is.numeric), round, 3)))
+
+# Find the most significant changes overall
+cat("\nTop 10 largest distance changes between substances:\n")
+print(pairs %>% 
+        arrange(desc(abs(dist_change))) %>%
+        head(10) %>%
+        mutate(across(where(is.numeric), round, 3)))
+
+
+```
+
+
+```{r}
+# Function to calculate and normalize distances
+calculate_normalized_distances <- function(coords) {
+  # Calculate Euclidean distances
+  n <- nrow(coords)
+  distances <- matrix(0, n, n)
+  rownames(distances) <- colnames(distances) <- rownames(coords)
+  
+  for(i in 1:n) {
+    for(j in 1:n) {
+      distances[i,j] <- sqrt(sum((coords[i,] - coords[j,])^2))
+    }
+  }
+  
+  # Normalize distances to sum to 1 (or alternatively to max = 1)
+  distances <- distances / sum(distances)
+  return(distances)
+}
+
+# Calculate normalized distances for both models
+dist_2d_norm <- calculate_normalized_distances(model_2d$conf)
+dist_3d_norm <- calculate_normalized_distances(model3d$conf)
+
+# Create comparison dataframe
+substances <- rownames(dist_2d_norm)
+pairs_list <- list()
+counter <- 1
+
+for(i in 1:(length(substances)-1)) {
+  for(j in (i+1):length(substances)) {
+    pairs_list[[counter]] <- data.frame(
+      from = substances[i],
+      to = substances[j],
+      dist_2d = dist_2d_norm[substances[i], substances[j]],
+      dist_3d = dist_3d_norm[substances[i], substances[j]],
+      # Calculate relative representation difference
+      rel_diff = (dist_3d_norm[substances[i], substances[j]] - 
+                 dist_2d_norm[substances[i], substances[j]]) / 
+                dist_2d_norm[substances[i], substances[j]] * 100
+    )
+    counter <- counter + 1
+  }
+}
+
+pairs <- do.call(rbind, pairs_list)
+
+# Compare with original dissimilarities
+original_dist <- as.matrix(dt)
+
+# Calculate correlation between original distances and MDS distances
+cor_2d <- cor(c(dist_2d_norm[lower.tri(dist_2d_norm)]), 
+              c(original_dist[lower.tri(original_dist)]), 
+              method = "spearman")
+cor_3d <- cor(c(dist_3d_norm[lower.tri(dist_3d_norm)]), 
+              c(original_dist[lower.tri(original_dist)]), 
+              method = "spearman")
+
+# Plot comparison of normalized distances
+ggplot(pairs, aes(x = dist_2d, y = dist_3d)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Comparison of Normalized Distances: 2D vs 3D MDS",
+       subtitle = sprintf("Correlation with original distances: 2D = %.3f, 3D = %.3f", 
+                         cor_2d, cor_3d),
+       x = "Normalized Distance in 2D Model",
+       y = "Normalized Distance in 3D Model") +
+  theme_minimal() +
+  coord_fixed()
+
+# Calculate preservation ratio for each pair
+pairs$preservation_ratio <- pairs$dist_3d / pairs$dist_2d
+
+# Find pairs with most different representation between models
+pairs_sorted <- pairs %>%
+  arrange(desc(abs(rel_diff))) %>%
+  mutate(across(where(is.numeric), round, 4))
+
+# Print top differences
+cat("\nPairs with most different relative distances between 2D and 3D models:\n")
+print(head(pairs_sorted, 10))
+
+# Focus analysis on specific substances
+focus_substances <- c("Salv", "N2O", "DMT")
+focus_pairs <- pairs %>%
+  filter(from %in% focus_substances & to %in% focus_substances) %>%
+  mutate(across(where(is.numeric), round, 4))
+
+cat("\nAnalysis of focus substances:\n")
+print(focus_pairs)
+
+```
+
+Centrality measure - works nice
+
+```{r}
+
+
+# Function to calculate normalized distances
+calculate_normalized_distances <- function(coords) {
+  n <- nrow(coords)
+  distances <- matrix(0, n, n)
+  rownames(distances) <- colnames(distances) <- rownames(coords)
+  
+  # Calculate Euclidean distances
+  for(i in 1:n) {
+    for(j in 1:n) {
+      distances[i,j] <- sqrt(sum((coords[i,] - coords[j,])^2))
+    }
+  }
+  
+  # Normalize so all distances sum to 1
+  distances <- distances / sum(distances)
+  return(distances)
+}
+
+# Calculate normalized distances for both models
+dist_2d_norm <- calculate_normalized_distances(model_2d$conf)
+dist_3d_norm <- calculate_normalized_distances(model3d$conf)
+
+# Calculate sum of distances for each state
+sums_2d <- rowSums(dist_2d_norm)
+sums_3d <- rowSums(dist_3d_norm)
+
+# Create summary dataframe
+distance_sums <- data.frame(
+  state = names(sums_2d),
+  sum_2d = sums_2d,
+  sum_3d = sums_3d
+) %>%
+  arrange(desc(sum_2d))  # sort by 2D sums
+
+# Print the results
+print("Normalized distance sums for each state:")
+print(distance_sums %>% mutate(
+  sum_2d = round(sum_2d, 4),
+  sum_3d = round(sum_3d, 4)
+))
+
+# Verify that total sums equal 1 for each model
+cat("\nVerification of normalization:\n")
+cat("Sum of all distances in 2D model:", sum(dist_2d_norm), "\n")
+cat("Sum of all distances in 3D model:", sum(dist_3d_norm), "\n")
+
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+# Function to calculate normalized distances
+calculate_normalized_distances <- function(coords) {
+  n <- nrow(coords)
+  distances <- matrix(0, n, n)
+  rownames(distances) <- colnames(distances) <- rownames(coords)
+  
+  # Calculate Euclidean distances
+  for(i in 1:n) {
+    for(j in 1:n) {
+      if(i != j) {  # Skip diagonal
+        distances[i,j] <- sqrt(sum((coords[i,] - coords[j,])^2))
+      }
+    }
+  }
+  
+  # Normalize so all non-diagonal distances sum to 1
+  distances <- distances / sum(distances[upper.tri(distances)])
+  return(distances)
+}
+
+# Calculate normalized distances for MDS models
+dist_2d_norm <- calculate_normalized_distances(model_2d$conf)
+dist_3d_norm <- calculate_normalized_distances(model3d$conf)
+
+# Normalize original distance matrix (dt)
+dt_matrix <- as.matrix(dt)
+# Replace NaN with 0 on diagonal
+diag(dt_matrix) <- 0
+# Normalize by sum of upper triangle (unique pairs)
+dt_norm <- dt_matrix / sum(dt_matrix[upper.tri(dt_matrix)])
+
+# Calculate sum of distances for each state (excluding self-distances)
+sums_2d <- rowSums(dist_2d_norm)
+sums_3d <- rowSums(dist_3d_norm)
+sums_orig <- rowSums(dt_norm)
+
+# Create summary dataframe
+distance_sums <- data.frame(
+  state = names(sums_2d),
+  sum_original = sums_orig,
+  sum_2d = sums_2d,
+  sum_3d = sums_3d
+) 
+
+# Print the results
+print("Normalized distance sums for each state:")
+print(distance_sums %>% mutate(
+  sum_original = round(sum_original, 4),
+  sum_2d = round(sum_2d, 4),
+  sum_3d = round(sum_3d, 4)
+))
+
+# Verify that sums of unique pairs equal 1 for each matrix
+cat("\nVerification of normalization (sum of unique pairs should be 1):\n")
+cat("Sum of unique pairs in original data:", sum(dt_norm[upper.tri(dt_norm)]), "\n")
+cat("Sum of unique pairs in 2D model:", sum(dist_2d_norm[upper.tri(dist_2d_norm)]), "\n")
+cat("Sum of unique pairs in 3D model:", sum(dist_3d_norm[upper.tri(dist_3d_norm)]), "\n")
+
+# Calculate correlations between the sums
+cat("\nCorrelations between distance sums:\n")
+cat("Original vs 2D:", cor(sums_orig, sums_2d), "\n")
+cat("Original vs 3D:", cor(sums_orig, sums_3d), "\n")
+cat("2D vs 3D:", cor(sums_2d, sums_3d), "\n")
+
+# Create visualization using ggplot2
+# 1. Original vs 2D
+p1 <- ggplot(distance_sums, aes(x = sum_original, y = sum_2d)) +
+  geom_point(aes(color = state)) +
+  geom_text_repel(aes(label = state), size = 3) +
+  scale_color_manual(values = point_col_ord) +
+  labs(title = "Original vs 2D MDS Distances",
+       x = "Original Normalized Sums",
+       y = "2D MDS Normalized Sums") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# 2. Original vs 3D
+p2 <- ggplot(distance_sums, aes(x = sum_original, y = sum_3d)) +
+  geom_point(aes(color = state)) +
+  geom_text_repel(aes(label = state), size = 3) +
+  scale_color_manual(values = point_col_ord) +
+  labs(title = "Original vs 3D MDS Distances",
+       x = "Original Normalized Sums",
+       y = "3D MDS Normalized Sums") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# 3. 2D vs 3D
+p3 <- ggplot(distance_sums, aes(x = sum_2d, y = sum_3d)) +
+  geom_point(aes(color = state)) +
+  geom_text_repel(aes(label = state), size = 3) +
+  scale_color_manual(values = point_col_ord) +
+  labs(title = "2D vs 3D MDS Distances",
+       x = "2D MDS Normalized Sums",
+       y = "3D MDS Normalized Sums") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Print plots
+print(p1)
+print(p2)
+print(p3)
+```
+
+
+THIS WOOOORKS FOR DINSTANCES MDS2-MDS3
+
+```{r}
+
+# Define the order
+states_order <- c('Baseline', 'Alp', 'Alc', 'GHB', 'Tra', 'Cod', 'Her', 'Coc', 'Amf', 'Mef', 'MDMA', 'MJ', 'N2O', 'DXM', 'Ket', 'Salv', '2CB', 'Psy', 'LSD', 'DMT')
+
+# Function to calculate normalized distances
+calculate_normalized_distances <- function(coords) {
+  n <- nrow(coords)
+  distances <- matrix(0, n, n)
+  rownames(distances) <- colnames(distances) <- rownames(coords)
+  
+  for(i in 1:n) {
+    for(j in 1:n) {
+      if(i != j) {  # Skip diagonal
+        distances[i,j] <- sqrt(sum((coords[i,] - coords[j,])^2))
+      }
+    }
+  }
+  distances <- distances / sum(distances[upper.tri(distances)])
+  return(distances)
+}
+
+# Calculate normalized distances
+dist_2d_norm <- calculate_normalized_distances(model_2d$conf)
+dist_3d_norm <- calculate_normalized_distances(model3d$conf)
+
+# Create a long format dataframe for all distances
+distances_long <- data.frame()
+
+for(state1 in states_order) {
+  for(state2 in states_order) {
+    if(state1 != state2) {
+      new_row <- data.frame(
+        from_state = state1,
+        to_state = state2,
+        dist_2d = dist_2d_norm[state1, state2],
+        dist_3d = dist_3d_norm[state1, state2],
+        change = (dist_3d_norm[state1, state2] - dist_2d_norm[state1, state2]) / 
+                 dist_2d_norm[state1, state2] * 100
+      )
+      distances_long <- rbind(distances_long, new_row)
+    }
+  }
+}
+
+# Convert states to factors with custom order
+distances_long$from_state <- factor(distances_long$from_state, levels = states_order)
+distances_long$to_state <- factor(distances_long$to_state, levels = states_order)
+
+# Create a faceted plot showing all distance changes
+p1 <- ggplot(distances_long, aes(x = to_state, y = change)) +
+  geom_bar(stat = "identity", aes(fill = change > 0)) +
+  facet_wrap(~from_state, scales = "free_y") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 10),
+        panel.spacing = unit(0.5, "lines")) +
+  labs(title = "Distance Changes from Each State (3D vs 2D)",
+       subtitle = "Positive values mean distance increased in 3D",
+       x = "To State",
+       y = "% Change") +
+  scale_fill_manual(values = c("red", "blue")) +
+  theme(legend.position = "none")
+
+# Create a heatmap of distance changes
+distance_matrix <- matrix(0, nrow = length(states_order), ncol = length(states_order))
+rownames(distance_matrix) <- colnames(distance_matrix) <- states_order
+
+for(i in 1:nrow(distances_long)) {
+  distance_matrix[distances_long$from_state[i], distances_long$to_state[i]] <- 
+    distances_long$change[i]
+}
+
+# Convert matrix to long format for ggplot
+distance_df <- as.data.frame(as.table(distance_matrix))
+colnames(distance_df) <- c("State1", "State2", "Change")
+
+# Convert states to factors with custom order
+distance_df$State1 <- factor(distance_df$State1, levels = states_order)
+distance_df$State2 <- factor(distance_df$State2, levels = states_order)
+
+# Create heatmap
+p2 <- ggplot(distance_df, aes(x = State1, y = State2, fill = Change)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                      midpoint = 0,
+                      name = "% Change") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_blank()) +
+  labs(title = "Distance Changes Between States: 3D vs 2D Model",
+       subtitle = "Red = further apart in 3D, Blue = closer in 3D")
+
+# Function to create parallel coordinates plot for one state
+create_parallel_plot <- function(state_name) {
+  state_distances <- distances_long %>%
+    filter(from_state == state_name) %>%
+    mutate(to_state = factor(to_state, levels = states_order))
+  
+  ggplot(state_distances) +
+    geom_segment(aes(x = 1, y = dist_2d,
+                     xend = 2, yend = dist_3d,
+                     color = to_state)) +
+    geom_point(aes(x = 1, y = dist_2d, color = to_state)) +
+    geom_point(aes(x = 2, y = dist_3d, color = to_state)) +
+    scale_x_continuous(breaks = c(1, 2),
+                      labels = c("2D", "3D")) +
+    scale_color_manual(values = point_col_ord) +
+    labs(title = paste("Distance Changes for", state_name),
+         y = "Normalized Distance",
+         color = "To State") +
+    theme_minimal()
+}
+
+# Print plots
+print(p1)
+print(p2)
+
+# Example for one state
+print(create_parallel_plot("DMT"))
+
+# Calculate summary statistics (maintaining order)
+summary_stats <- distances_long %>%
+  group_by(from_state) %>%
+  summarise(
+    mean_change = mean(change),
+    max_increase = max(change),
+    max_decrease = min(change),
+    most_increased = to_state[which.max(change)],
+    most_decreased = to_state[which.min(change)]
+  )
+
+# Convert to factor to maintain order in output
+summary_stats$from_state <- factor(summary_stats$from_state, levels = states_order)
+summary_stats <- summary_stats %>% arrange(from_state)
+
+# Print summary
+print(summary_stats %>% mutate(
+  mean_change = round(mean_change, 2),
+  max_increase = round(max_increase, 2),
+  max_decrease = round(max_decrease, 2)
+))
+
+
+```
+
+WORKS - barplot per substance
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+
+# Calculate the sum of distances for each substance
+summed_distances <- distances_long %>%
+  group_by(from_state) %>%
+  summarise(
+    total_change = sum(change)
+  ) %>%
+  mutate(
+    from_state = factor(from_state, levels = states_order)
+  )
+
+# Create the plot
+ggplot(summed_distances, aes(x = from_state, y = total_change)) +
+  geom_bar(stat = "identity", aes(fill = total_change > 0)) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = "Total Distance Changes by Substance (3D vs 2D)",
+    subtitle = "Sum of all distance changes to other substances",
+    x = "Substance",
+    y = "Total % Change"
+  ) +
+  scale_fill_manual(values = c("red", "blue")) +
+  theme(legend.position = "none")
+
+
+```
+
+
+MY SOLUTION
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Calculate total absolute change for each substance
+substance_changes <- distances_long %>%
+  group_by(from_state) %>%
+  summarise(total_change = sum(abs(change))) %>%
+  arrange(desc(total_change))
+
+# Get top 5 and bottom 5 substances
+selected_substances <- c(
+  head(substance_changes$from_state, 5),
+  tail(substance_changes$from_state, 5)
+)
+
+# Filter the data for selected substances
+plot_data <- distances_long %>%
+  filter(from_state %in% selected_substances) %>%
+  mutate(
+    from_state = factor(from_state, levels = selected_substances),
+    to_state = factor(to_state, levels = names(point_col_ord))
+  ) %>%
+  arrange(desc(abs(change)))
+
+# Create the plot
+ggplot(plot_data, aes(x = to_state, y = change)) +
+  geom_bar(stat = "identity", aes(fill = to_state)) +
+  facet_wrap(~from_state, nrow = 2, scales = "free_y") +
+  scale_fill_manual(values = point_col_ord) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    strip.text = element_text(size = 10),
+    panel.spacing = unit(1, "lines")
+  ) +
+  labs(
+    title = "Distance Changes: Most vs Least Changed Substances",
+    subtitle = "Top row: 5 most changed / Bottom row: 5 least changed",
+    x = "Target Substance",
+    y = "% Change in Distance (3D vs 2D)"
+  )
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+substance_changes <- distances_long %>%
+  group_by(from_state) %>%
+  summarise(total_change = sum(abs(change))) %>%
+  arrange(desc(total_change))
+
+selected_substances <- c(
+  head(substance_changes$from_state, 5),
+  tail(substance_changes$from_state, 5)
+)
+
+plot_data <- distances_long %>%
+  filter(from_state %in% selected_substances) %>%
+  mutate(
+    from_state = factor(from_state, levels = selected_substances),
+    to_state = factor(to_state, levels = names(point_col_ord))
+  ) %>%
+  arrange(desc(abs(change)))
+
+y_limits <- c(
+  floor(min(plot_data$change) / 10) * 10,
+  ceiling(max(plot_data$change) / 10) * 10
+)
+
+ggplot(plot_data, aes(x = to_state, y = change)) +
+  geom_bar(stat = "identity", aes(fill = to_state)) +
+  facet_wrap(~from_state, nrow = 2) +
+  scale_fill_manual(values = point_col_ord) +
+  scale_y_continuous(limits = y_limits) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    strip.text = element_text(size = 10),
+    panel.spacing = unit(1, "lines")
+  ) +
+  labs(
+    title = "Distance Changes: Most vs Least Changed Substances",
+    subtitle = "Top row: 5 most changed / Bottom row: 5 least changed",
+    x = "Target Substance",
+    y = "% Change in Distance (3D vs 2D)"
+  )
+```
+
+2.0 Solution
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+
+# Calculate average change across all substances
+avg_change <- mean(distances_long$change)
+
+# Calculate total absolute change and order substances
+substance_order <- distances_long %>%
+  group_by(from_state) %>%
+  summarise(total_change = sum(abs(change))) %>%
+  arrange(desc(total_change)) %>%
+  pull(from_state)
+
+# Prepare plot data with ordered substances
+plot_data <- distances_long %>%
+  mutate(
+    from_state = factor(from_state, levels = substance_order),
+    to_state = factor(to_state, levels = names(point_col_ord))
+  )
+
+# Find y-axis limits
+y_limits <- c(
+  floor(min(plot_data$change) / 10) * 10,
+  ceiling(max(plot_data$change) / 10) * 10
+)
+
+# Create plot
+ggplot(plot_data, aes(x = to_state, y = change)) +
+  geom_bar(stat = "identity", aes(fill = to_state)) +
+  geom_hline(yintercept = avg_change, linetype = "dotted", color = "gray40", size = 0.5) +
+  facet_wrap(~from_state, ncol = 4) +
+  scale_fill_manual(values = point_col_ord) +
+  scale_y_continuous(limits = y_limits) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 6),
+    strip.text = element_text(size = 8),
+    panel.spacing = unit(0.8, "lines"),
+    legend.position = "none"
+  ) +
+  labs(
+    title = "Distance Changes Between Substances in 3D vs 2D",
+    subtitle = paste("Gray dotted line shows average change:", round(avg_change, 2), "%"),
+    x = "Target Substance",
+    y = "% Change in Distance"
+  )
+
+```
+
+
+
+<br>
+<a name="S9"></a>
+&nbsp;
+
+**9. Baseline-centered polar coordinates model**
+
+```{r}
+
+# Data preparation for circular unfolding analysis
+dt_polar <- dt
+dt_polar[is.na(dt_polar)] <- 0
+dt_polar <- dt_polar[-1,-1]
+
+# Color scheme for states
+point_col_radial <- c(
+  Alc = "#8A99BF", MJ = "#327D43", MDMA = "#7B3894",
+  Amf = "#8B2B2B", LSD = "#5998BA", Psy = "#5DADB3",
+  Mef = "#A23E71", Coc = "#BF436E", Alp = "#6B86B0",
+  Ket = "#6861C7", DMT = "#108BB8", N2O = "#505CB9",
+  DXM = "#7A65A8", Cod = "#ACA232", Tra = "#AC845F",
+  Her = "#755B28", Salv = "#AFA0BD", GHB = "#617991",
+  `2CB` = "#6AA4BA"
+)
+
+# Perform circular unfolding
+circ_model <- unfolding(dt_polar, itmax = 10000, circle = "column", type = "ordinal", init = "torgerson")
+
+# Calculate and display stress value
+stress_val = round(circ_model$stress,4)
+stress_val
+
+## Configurate Circular Unfolding plot
+# Get the original coordinates
+conf_col_jittered <- circ_model$conf.col
+
+# Adjust coordinates for overlapping points (for visibility puroposes, only this graph)
+conf_col_jittered["Tra", ] <- conf_col_jittered["Tra", ] + c(0.01, 0.0)
+conf_col_jittered["Cod", ] <- conf_col_jittered["Cod", ] + c(-0.024, -0.01)
+conf_col_jittered["Ket", ] <- conf_col_jittered["Ket", ] + c(-0.035, 0.01)
+conf_col_jittered["Amf", ] <- conf_col_jittered["Amf", ] + c(-0.04, 0.0)
+conf_col_jittered["Alp", ] <- conf_col_jittered["Alp", ] + c(-0.01, 0.01)
+conf_col_jittered["Psy", ] <- conf_col_jittered["Psy", ] + c(-0.02, -0.01)
+conf_col_jittered["LSD", ] <- conf_col_jittered["LSD", ] + c(0.015, 0.02)
+
+# Create a custom plotting function
+custom_plot <- function(x, ...) {
+  plot(x, ...)
+  points(conf_col_jittered, col = point_col_radial, pch = 19, cex = 1.5)
+}
+
+# Visualize unfolding results with manually jittered points
+custom_plot(circ_model, 
+            main = "Restricted Circular Unfolding", 
+            col.rows = "white", 
+            col.columns = "white",  # Set to white to hide original points
+            label.conf.rows = list(label = FALSE), 
+            cex = 2, 
+            label.conf.columns = list(label = F, pos = 3, col = "black", cex = 0.77))
+
+
+## Prepare Polar coordinates plot
+full_names <- c(
+  Alc = "Alcohol", MJ = "Marijuana", MDMA = "MDMA",
+  Amf = "Amphetamine", LSD = "LSD", Psy = "Psilocybin",
+  Mef = "Mephedrone", Coc = "Cocaine", Alp = "Alprazolam",
+  Ket = "Ketamine", DMT = "DMT", N2O = "Nitrous Oxide",
+  DXM = "DXM", Cod = "Codeine", Tra = "Tramadol",
+  Her = "Heroin", Salv = "Salvia", GHB = "GHB",
+  `2CB` = "2CB")
+
+# Extract coordinates and calculate angles
+x <- circ_model$conf.col[, 1]
+y <- circ_model$conf.col[, 2]
+angles <- atan2(y, x)
+angles_degrees <- angles * (180 / pi)
+
+# Adjust angles for overlapping points for visibility purposes
+jittered_angles <- angles_degrees
+jittered_angles["Cod"] <- jittered_angles["Cod"] + 3
+jittered_angles["DXM"] <- jittered_angles["DXM"] + 2
+jittered_angles["Ket"] <- jittered_angles["Ket"] - 2
+jittered_angles["Amf"] <- jittered_angles["Amf"] + 3
+jittered_angles["Psy"] <- jittered_angles["Psy"] - 1.5
+jittered_angles["LSD"] <- jittered_angles["LSD"] + 1.5
+# ... continue for other substances as needed
+
+# Create data frame with angular positions
+states <- rownames(circ_model$conf.col)
+angle_data <- data.frame(State = states, Angle_Radians = angles, Angle_Degrees = jittered_angles)
+print(angle_data)
+
+## Prepare data for polar-coordinate plot
+unique_state_codes <- rownames(dt)
+plot_data <- data.frame(State = unique_state_codes[-1], Dissimilarity = dt[unique_state_codes[-1], "Baseline"])
+plot_data$AngularPosition <- jittered_angles
+plot_data$Dissimilarity_fraction <- plot_data$Dissimilarity / 100
+plot_data$D <- exp(plot_data$Dissimilarity_fraction)
+
+## OPTIONAL CHOICES
+show_labels <- FALSE
+use_full_names <- FALSE 
+labels_to_right <- FALSE
+
+# Add full names to plot_data
+plot_data$FullName <- full_names[plot_data$State]
+
+# Create plotly polar plot
+fig <- plot_ly(
+  data = plot_data,
+  type = 'scatterpolargl',
+  r = plot_data$D,
+  theta = plot_data$AngularPosition,
+  mode = if(show_labels) 'markers+text' else 'markers',
+  marker = list(
+    size = 18,
+    line = list(color = '#FFF'),
+    opacity = 0.75,
+    color = point_col_radial,
+    colorscale = list(colors = as.list(point_col_radial))
+  )
+)
+
+# Add text only if show_labels is TRUE
+if(show_labels) {
+  fig <- fig %>% add_trace(
+    text = if(use_full_names) plot_data$FullName else plot_data$State,
+    textposition = if(labels_to_right) 'middle right' else 'auto',
+    textfont = list(size = 13)
+  )
+}
+
+# Configure plot layout
+# Configure plot layout
+# Configure plot layout
+fig <- layout(fig,
+  polar = list(
+    radialaxis = list(
+      rangemode = 'tozero',
+      range = c(exp(0), exp(1)),
+      tickvals = exp(seq(0,1, by = 0.1)),
+      ticktext = c(0,10,20,30,40,50,60,70,80,90,100),
+      side = 'clockwise',
+      showline = TRUE,
+      linewidth = 2,
+      tickwidth = 2,
+      gridcolor = 'gray',
+      gridwidth = 1,
+      tickfont = list(size = 12),
+      tickangle = 'auto',  # This keeps the labels vertical
+      ticksuffix = ' ',  # Add a small space after tick labels
+      tickmode = 'array',
+      ticklabelposition = 'inside',
+      ticklabelstep = 1
+    ),
+    angularaxis = list(
+      tickwidth = 2,
+      linewidth = 3,
+      layer = 'below traces',
+      tickfont = list(size = 12)
+    )
+  ),
+  title = "",
+  paper_bgcolor = "white",
+  bgcolor = "white"
+)
+
+# Add legend and display plot
+fig <- fig %>% layout(legend = list(x = 0.9, y = 0.9))
+fig
+
+# Clean up workspace
+#rm(circ_model, fig, plot_data)
+
+```
+
+<br>
+<a name="S10"></a>
+&nbsp;
+
+**10. Prepare data for python-based models - additional exclusions**
+
+```{r}
+
+## Perform exclusions of subjects with stereotypical response patterns (overuse of the maximal value)
+
+# Initialization of empty arrays
+resp_num <- matrix(0, nrow = ncol(list_df[[1]]), ncol = ncol(list_df[[1]]))
+temp_m <- resp_num
+
+resp_ratio= matrix(0, nrow = length(list_df), 1)
+
+# Calculate the proportion
+for (i in 1:length(list_df)) {
+  df <- list_df[[i]]
+  
+  resp_num[!is.na(df)] <- resp_num[!is.na(df)] + 1
+  temp_m[!is.na(df)] <- temp_m[!is.na(df)] + as.numeric(df[!is.na(df)])
+  
+  all_numeric_values <- as.vector(unlist(df, use.names = FALSE))
+  numeric_values_no_na <- as.numeric(all_numeric_values[!is.na(all_numeric_values)])
+  
+  resp_ratio[i] = sum(numeric_values_no_na == 100)/length(numeric_values_no_na)
+
+}
+
+# Remove redundant objects
+rm(resp_num)
+rm(temp_m)
+
+# Rename variables
+resp_ratio <- as.data.frame(resp_ratio)
+names(resp_ratio)[names(resp_ratio) == "V1"] <- "Proportion"
+resp_ratio$ID <- c(1:length(resp_ratio$Proportion))
+
+# Replace zeroes with minimal values (only positive values required)
+resp_ratio$Proportion[resp_ratio$Proportion == 0] <- resp_ratio$Proportion[resp_ratio$Proportion == 0] + 0.01
+
+## Determine the cut-off threshold using default settings and lognormal distribution
+out_lim <- getOutliersII(resp_ratio$Proportion, distribution = "lognormal") 
+cutoff_right <- out_lim$limit[2]
+cutoff_right
+
+hist(resp_ratio$Proportion, main = "Proportion of the maximal value", breaks = 40, xlim = c(0,1), ylim = c(0,120))
+abline(v=cutoff_right, col = "darkred")
+
+count_higher_than <- sum(resp_ratio$Proportion > cutoff_right)
+count_higher_than
+
+## Filter individual subjects based on the cut-off criterion
+resp_ratio$Inclusion[resp_ratio$Proportion < cutoff_right] <- T
+resp_ratio$Inclusion[resp_ratio$Proportion > cutoff_right] <- F
+include <- resp_ratio$ID[resp_ratio$Inclusion == T]
+filtered_list_df <- list_df[include]
+
+#Basic demographic statistics after exclusions
+df_after_exclusions <- df_filtered %>% filter(ID %in% include)
+df_after_exclusions %>%
+  summarise(
+    Number_of_Participants = n(),
+    Mean_Age = mean(Age, na.rm = TRUE),
+    SD_Age = sd(Age, na.rm = TRUE),
+    Male_Participants = sum(Gender == "Man"),
+    Female_Participants = sum(Gender == "Woman"),
+    Other_Participants = sum(Gender == "Other")
+  ) %>%
+  print()
+
+MDS_ASC_additional_variables <- df_after_exclusions[c(1,4:7, 538:560, 562, 563, 594, 641)]
+write.table(MDS_ASC_additional_variables, file = "MDS_ASC_additional_variables", sep = "\t")
+save(filtered_list_df, file = "MDS_ASC_individual_matrices.RData")
+
+```
+

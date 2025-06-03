@@ -1,0 +1,1927 @@
+---
+title: <font size="5"><strong> Mapping the space of altered states of consciousness - Exploratory Analysis</strong></font>
+author: <br> <font size="4"> Paweł Motyka </font> <br> pmotyka@psych.pan.pl  <br> 
+date: <font size="3"> April 2024  </font>
+output: html_document
+chunk_output_type: console
+editor_options: 
+--- 
+
+&nbsp;
+<br>
+<font size="4">
+**List of sections**:
+
+1. Load data and perform exclusions [S1](#S1)
+2. Group comparisons using Procrustes Analysis [S2](#S2)
+3. Create individual and aggregated dissimilarity matrices [S3](#S3)
+4. Encode exploratory variables into data frame [S4](#S4)
+5. Analyze exploratory variables [S5](#S5)
+6. 4D Multidimensional scaling [S6](#S6)
+7. Heatmaps for high-dimensional data [S7](#S7)
+8. Andrews curves for high-dimensional data [S8](#S8)
+9. Subspaces for substance classes [S9](#S9)
+10. Stress values as a function of compared states [S10](#S10)
+
+<a name="S1"></a>
+&nbsp;
+
+**1. Load data and perform exclusions** 
+
+```{r, message = FALSE,  warning = FALSE}
+
+# Load required packages
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(smacof)
+library(plotly)
+library(MASS)
+library(fitdistrplus)
+library(extremevalues)
+library(here)
+library(patchwork)
+library(scatterplot3d)
+library(rgl)
+library(grid)
+library(gridExtra)
+library(viridis)
+library(shapes)
+library(matrixStats)
+library(shiny)
+library(shinydashboard)
+library(andrews)
+library(pheatmap)
+library(smacof)
+library(reshape2)
+
+
+# Set working directory
+mds_dir <- here::here()
+
+# Load data
+df_full  <- read.csv(file = paste0(mds_dir,"/MDS_ASC_data"), sep = "\t", header = TRUE, quote = "\"")
+
+# Basic demographic stats before filtering
+df_full %>%
+  summarise(
+    Number_of_Participants = n(),
+    Mean_Age = mean(Age, na.rm = TRUE),
+    SD_Age = sd(Age, na.rm = TRUE),
+    Male_Participants = sum(Gender == "Man"),
+    Female_Participants = sum(Gender == "Woman"),
+    Other_Participants = sum(Gender == "Other")
+  ) %>%
+  print()
+
+## Perform exclusions according to the preregistered criteria
+
+#(1) Average response time per dissimilarity rating below 2 seconds
+#hist(df_full$time_per_subs, breaks = 100)
+cat("Response time above 2s:", sum(df_full$time_per_subs < 2, na.rm = TRUE), "\n")
+df_filtered <- filter(df_full,  time_per_subs > 2)
+
+
+#(2) Inaccurate responses to the two control questions
+
+# Test 1
+# hist(df_filtered$test1, breaks = 100, xlim = c(0,100), ylim = c(0,50))
+cat("Uncorrect response to test1:", sum(df_filtered$test1 < 99, na.rm = TRUE), "\n")
+df_filtered <- filter(df_filtered,  test1 >= 99) 
+
+# Test2
+# hist(df_filtered$test2, breaks = 100, xlim = c(0,7), ylim = c(0,100))
+cat("Uncorrect response to test2:", sum(df_filtered$test2 > 1, na.rm = TRUE), "\n")
+df_filtered <- filter(df_filtered,  test2 <= 1) # liberal (2nd step)
+
+# Recode ID variable
+df_filtered$ID <- 1:length(df_filtered$ID)
+
+# Basic demographic stats after filtering
+df_filtered %>%
+  summarise(
+    Number_of_Participants = n(),
+    Male = sum(Gender == "Man"),
+    Female = sum(Gender == "Woman"),
+    Other = sum(Gender == "Other"),
+    Mean_Age = mean(Age, na.rm = TRUE),
+    SD_Age = sd(Age, na.rm = TRUE),
+  ) %>%
+  print()
+
+colnames(df_filtered) <- gsub("X2CB", "2CB", colnames(df_filtered))
+
+# Define substance codes
+substance_codes <- c("Baseline", "Alc", "MJ", "MDMA", "Amf", "LSD", "Psy", "Mef", "Coc", 
+                     "Alp", "Ket", "DMT", "N2O", "DXM", "Cod", "Tra", "Her", "Salv", 
+                     "GHB", "Dat", "Ben", "2CB", "Diph")
+
+```
+
+<br>
+<a name="S2"></a>
+&nbsp;
+
+**2. Group comparisons using Procrustes Analysis** 
+
+```{r, fig.width= 8.5, fig.height= 7}
+
+# Create subsets for procrustes analysis
+df_Psychiatric <- df_filtered[df_filtered$EverDiagnosis == "Yes",]
+df_NoPsychiatric <- df_filtered[df_filtered$EverDiagnosis == "No",]
+
+df_Medication <- df_filtered[df_filtered$Medication == "Yes",]
+df_NoMedication <- df_filtered[df_filtered$Medication == "No",]
+
+df_Males <- df_filtered[df_filtered$Gender == "Man",]
+df_Females <- df_filtered[df_filtered$Gender == "Woman",]
+
+
+# Create all combinations of substance codes
+combinations <- expand.grid(Var1 = substance_codes, Var2 = substance_codes, stringsAsFactors = FALSE)
+combinations <- subset(combinations, Var1 != Var2)
+combinations <- subset(combinations, Var1 < Var2)
+
+column_names <- apply(combinations, 1, function(x) paste(x, collapse = "_"))
+
+# Define subsets for analysis
+subsets_names <- c("df_Psychiatric", "df_NoPsychiatric", "df_Medication", "df_NoMedication", "df_Males", "df_Females")
+
+# Loop through each subset
+for (subset_name in subsets_names) {
+  subset <- get(subset_name)
+  
+  # Process each subject's data
+  for (i in 1:nrow(subset)) {
+    subject_data <- subset[i, ]
+    subject_df <- data.frame(matrix(NA, nrow = length(substance_codes), ncol = length(substance_codes), dimnames = list(substance_codes, substance_codes)), check.names = FALSE)
+    
+    # Fill the subject's data frame
+    for (code1 in substance_codes) {
+      for (code2 in substance_codes) {
+        col_name1 <- paste(code1, code2, sep = "")
+        col_name2 <- paste(code2, code1, sep = "")
+        if (col_name1 != col_name2) {
+          if (!is.na(subject_data[[col_name1]])) {
+            subject_df[code1, code2] <- subject_data[[col_name1]]
+            subject_df[code2, code1] <- subject_data[[col_name1]]
+          } else if (!is.na(subject_data[[col_name2]])) {
+            subject_df[code1, code2] <- subject_data[[col_name2]]
+            subject_df[code2, code1] <- subject_data[[col_name2]]
+          }
+        }
+      }
+    }
+    
+    # Assign the subject's data frame to the global environment
+    assign(paste("df_", i, sep = ""), subject_df, envir = .GlobalEnv)
+  }
+  
+  # Initialize matrices for calculations
+  comparisons_n <- matrix(0, nrow = length(substance_codes), ncol = length(substance_codes))
+  dm_average <- comparisons_n
+  
+  # Calculate average values and number of comparisons
+  for (i in 1:nrow(subset)) {
+    df_name <- paste("df_", i, sep = "")
+    df <- get(df_name)
+    
+    comparisons_n[!is.na(df)] <- comparisons_n[!is.na(df)] + 1
+    dm_average[!is.na(df)] <- dm_average[!is.na(df)] + as.numeric(df[!is.na(df)])
+  }
+  dm_average <- dm_average / comparisons_n
+  colnames(dm_average) <- substance_codes
+  rownames(dm_average) <- substance_codes
+  
+  # Remove specific substances from the analysis
+  dm_average <- dm_average[!(rownames(dm_average) %in% c("Diph", "Dat", "Ben")), ]
+  dm_average <- dm_average[, !(colnames(dm_average) %in% c("Diph", "Dat", "Ben"))]
+  
+  # Assign the result to a new variable in the global environment
+  dt_name <- paste("dt_", substr(subset_name, 4, nchar(subset_name)), sep = "")
+  assign(dt_name, dm_average, envir = .GlobalEnv)
+}
+
+# Remove temporary subject data frames
+variables <- ls()
+vars_to_remove <- variables[grep("^df_[0-9]+$", variables)]
+rm(list = vars_to_remove)
+
+# Perform Multidimensional Scaling (MDS) for each group
+fit.Females <- mds(dt_Females, type = "ordinal", init = "torgerson") # default ndim = 2
+fit.Males <- mds(dt_Males, type = "ordinal", init = "torgerson")
+
+fit.Medication <- mds(dt_Medication, type = "ordinal", init = "torgerson")
+fit.NoMedication <- mds(dt_NoMedication, type = "ordinal", init = "torgerson")
+
+fit.Psychiatric <- mds(dt_Psychiatric, type = "ordinal", init = "torgerson")
+fit.NoPsychiatric <- mds(dt_NoPsychiatric, type = "ordinal", init = "torgerson")
+
+
+## Plot 2D models for each group
+
+# Define color scheme
+point_col <- c(
+  Baseline = "#2B2B2B",    
+  Alc = "#8A99BF",      
+  MJ = "#327D43",           
+  MDMA = "#7B3894",        
+  Amf = "#8B2B2B",       
+  LSD = "#5998BA",         
+  Psy = "#5DADB3",
+  Mef = "#A23E71",
+  Coc = "#BF436E",
+  Alp = "#6B86B0",
+  Ket = "#6861C7",
+  DMT = "#108BB8",
+  N2O = "#505CB9",  
+  DXM = "#7A65A8",
+  Cod = "#ACA232",
+  Tra = "#AC845F",
+  Her = "#755B28",
+  Salv = "#AFA0BD",
+  GHB = "#617991",
+  `2CB` = "#6AA4BA"
+)
+
+# Function to create both labeled and unlabeled plots
+create_mds_plots <- function(fit, title_prefix) {
+  # Calculate stress sizes
+  sizes_o <- sqrt(fit$spp)
+  min_range <- 4
+  max_range <- 9
+  sizes_o <- ((sizes_o - min(sizes_o)) / (max(sizes_o) - min(sizes_o))) * 
+             (max_range - min_range) + min_range
+  
+  # Prepare data
+  plot_data <- as.data.frame(fit$conf)
+  colnames(plot_data) <- c("D1", "D2")
+  plot_data$label <- rownames(fit$conf)
+  
+  # Calculate stress value
+  stress_val <- round(fit$stress, 4)
+  
+  # Create labeled plot
+  p1 <- ggplot(data = plot_data, aes(x = D1, y = D2)) +
+    geom_point(color = alpha(point_col[plot_data$label], 0.5), size = sizes_o) +
+    geom_point(color = point_col[plot_data$label], size = 2) +
+    geom_text(aes(label = label), hjust = -0.5, vjust = -0.5, size = 3) +
+    labs(title = paste0(title_prefix, " (stress = ", stress_val, ")"),
+         x = "Dimension 1", y = "Dimension 2") +
+    coord_fixed() +
+    xlim(-0.8, 1.1) +
+    ylim(-1, 0.85) +
+    theme_minimal() +
+    theme(legend.position = "none",
+          plot.title = element_text(size = 11))
+  
+  return(list(labeled = p1))
+}
+
+# Create plots for each comparison
+# Gender comparison
+gender_female <- create_mds_plots(fit.Females, "MDS Females")
+gender_male <- create_mds_plots(fit.Males, "MDS Males")
+
+# Medication comparison
+med_yes <- create_mds_plots(fit.Medication, "MDS Medication")
+med_no <- create_mds_plots(fit.NoMedication, "MDS No Medication")
+
+# Psychiatric diagnosis comparison
+psych_yes <- create_mds_plots(fit.Psychiatric, "MDS Psychiatric Diagnosis")
+psych_no <- create_mds_plots(fit.NoPsychiatric, "MDS No Psychiatric Diagnosis")
+
+# Display plots (example for gender comparison)
+
+# Gender comparison - labeled
+grid.arrange(gender_female$labeled, gender_male$labeled, ncol = 2)
+
+# Medication comparison - labeled
+grid.arrange(med_yes$labeled, med_no$labeled, ncol = 2)
+
+# Psychiatric comparison - labeled
+grid.arrange(psych_yes$labeled, psych_no$labeled, ncol = 2)
+
+
+
+# Perform Procrustes analysis to compare groups
+
+# Gender comparison
+fit.proc_gender <- Procrustes(fit.Females$conf, fit.Males$conf)
+fit.proc_gender
+
+op <- par(mfrow = c(2,2))
+plot(fit.Females, main = "MDS Females")
+plot(fit.Males, main = "MDS Males")
+plot(fit.proc_gender)
+plot(fit.proc_gender, plot.type = "transplot", length = 0.05)
+par(op)
+
+
+# Medication comparison
+fit.proc_medication <- Procrustes(fit.Medication$conf, fit.NoMedication$conf)
+fit.proc_medication
+
+op <- par(mfrow = c(2,2))
+plot(fit.Medication, main = "MDS Medication")
+plot(fit.NoMedication, main = "MDS No Medication")
+plot(fit.proc_medication)
+plot(fit.proc_medication, plot.type = "transplot", length = 0.05)
+par(op)
+
+# Psychiatric diagnosis compariso
+fit.proc_diagnosis <- Procrustes(fit.Psychiatric$conf, fit.NoPsychiatric$conf)
+fit.proc_diagnosis
+
+op <- par(mfrow = c(2,2))
+plot(fit.Psychiatric, main = "MDS Psychiatric diagnosis")
+plot(fit.NoPsychiatric, main = "MDS No Psychiatric diagnosis")
+plot(fit.proc_diagnosis)
+plot(fit.proc_diagnosis, plot.type = "transplot", length = 0.05)
+par(op)
+
+
+## Analyze variability of "baseline position" (in relation to other states) for psychiatric and non-psychiatric subgroups
+
+# Function to analyze baseline distances for a group 
+analyze_baseline_distances <- function(subset_data, substance_codes) {
+  n_subjects <- nrow(subset_data)
+  all_baseline_distances <- list()
+  
+  # Process each subject's data
+  for (i in 1:nrow(subset_data)) {
+    subject_data <- subset_data[i, ]
+    subject_df <- data.frame(matrix(NA, 
+                                  nrow = length(substance_codes), 
+                                  ncol = length(substance_codes), 
+                                  dimnames = list(substance_codes, substance_codes)), 
+                            check.names = FALSE)
+    
+    # Fill the subject's data frame using the same logic as original code
+    for (code1 in substance_codes) {
+      for (code2 in substance_codes) {
+        col_name1 <- paste(code1, code2, sep = "")
+        col_name2 <- paste(code2, code1, sep = "")
+        if (col_name1 != col_name2) {
+          if (!is.na(subject_data[[col_name1]])) {
+            subject_df[code1, code2] <- subject_data[[col_name1]]
+            subject_df[code2, code1] <- subject_data[[col_name1]]
+          } else if (!is.na(subject_data[[col_name2]])) {
+            subject_df[code1, code2] <- subject_data[[col_name2]]
+            subject_df[code2, code1] <- subject_data[[col_name2]]
+          }
+        }
+      }
+    }
+    
+    # Extract baseline distances for this subject
+    baseline_distances <- data.frame(
+      subject_id = i,
+      substance = substance_codes[substance_codes != "Base"],
+      distance = as.numeric(subject_df["Base", substance_codes != "Base"])
+    )
+    
+    all_baseline_distances[[i]] <- baseline_distances
+  }
+  
+  # Combine all subjects' data
+  result <- do.call(rbind, all_baseline_distances)
+  return(result)
+}
+
+# Add sampling step for balanced groups
+n_psychiatric <- nrow(df_Psychiatric)
+set.seed(123)  # for reproducibility
+df_NoPsychiatric_sampled <- df_NoPsychiatric[sample(nrow(df_NoPsychiatric), n_psychiatric), ]
+
+# Calculate and print average number of substances per person in each group
+mean_substances_psychiatric <- mean(df_Psychiatric$Subs_N)
+mean_substances_nonpsychiatric <- mean(df_NoPsychiatric_sampled$Subs_N)
+print(paste("Average number of substances in psychiatric group:", round(mean_substances_psychiatric, 2)))
+print(paste("Average number of substances in non-psychiatric group:", round(mean_substances_nonpsychiatric, 2)))
+
+# Analyze both groups
+psychiatric_distances <- analyze_baseline_distances(df_Psychiatric, substance_codes)
+psychiatric_distances$group <- "Psychiatric"
+
+nonpsychiatric_distances <- analyze_baseline_distances(df_NoPsychiatric_sampled, substance_codes)
+nonpsychiatric_distances$group <- "Non-Psychiatric"
+
+# Combine data
+all_distances <- rbind(psychiatric_distances, nonpsychiatric_distances)
+
+# Remove substances that were removed in original analysis
+substances_to_remove <- c("Diph", "Dat", "Ben")
+all_distances <- all_distances[!all_distances$substance %in% substances_to_remove, ]
+
+# Calculate overall mean for each substance to determine order
+substance_means <- all_distances %>%
+  group_by(substance) %>%
+  summarise(mean_distance = mean(distance, na.rm = TRUE)) %>%
+  arrange(mean_distance)
+
+# Create factor with ordered levels
+all_distances$substance <- factor(all_distances$substance, 
+                                levels = substance_means$substance)
+
+mean_sd <- function(x) {
+  m <- mean(x, na.rm = TRUE)
+  s <- sd(x, na.rm = TRUE)
+  data.frame(y = m, ymin = m - s, ymax = m + s)
+}
+
+substance_plot_sd <- ggplot(all_distances, aes(x = substance, y = distance, color = group)) +
+  stat_summary(fun.data = mean_sd, geom = "errorbar", width = 0.2, position = position_dodge(width = 0.8)) +
+  stat_summary(fun = mean, geom = "point", size = 3, position = position_dodge(width = 0.8)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.minor = element_blank()) +
+  labs(title = "Baseline Distances by Group (Mean ± SD)",
+       x = "Substance", y = "Distance from Baseline", color = "Group") +
+  scale_color_manual(values = c("Psychiatric" = "#E69F00", "Non-Psychiatric" = "#56B4E9"))
+
+print(substance_plot_sd)
+
+
+# Calculate SDs for each substance in each group
+substance_sds <- all_distances %>%
+  group_by(group, substance) %>%
+  summarise(sd_distance = sd(distance, na.rm = TRUE), .groups = "drop")
+
+# Perform F-test comparing SDs between groups
+f_test <- var.test(sd_distance ~ group, data = substance_sds)
+print(f_test)
+mean(substance_sds$sd_distance[substance_sds$group == "Non-Psychiatric"], na.rm = T)
+mean(substance_sds$sd_distance[substance_sds$group == "Psychiatric"], na.rm = T)
+
+## Create main plot with ordered substances (alternative visualization)
+# substance_plot <- ggplot(all_distances, aes(x = substance, y = distance, color = group)) +
+#   geom_point(position = position_dodge(width = 0.8), 
+#             alpha = 0.2, 
+#             size = 1) +
+#   stat_summary(fun = mean, 
+#               geom = "point", 
+#               size = 3,
+#               position = position_dodge(width = 0.8)) +
+#   stat_summary(fun.data = mean_se, 
+#               geom = "errorbar", 
+#               width = 0.2,
+#               position = position_dodge(width = 0.8)) +
+#   theme_minimal() +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1),
+#         panel.grid.minor = element_blank()) +
+#   labs(title = "Baseline Distances Distribution by Group",
+#        subtitle = "Points show individual ratings, large dots show means with SE",
+#        x = "Substance", 
+#        y = "Distance from Baseline",
+#        color = "Group") +
+#   scale_color_manual(values = c("Psychiatric" = "#E69F00", 
+#                                "Non-Psychiatric" = "#56B4E9"))
+# 
+# print(substance_plot)
+
+
+```
+
+
+<br>
+<a name="S3"></a>
+&nbsp;
+
+
+**3. Create individual and aggregated dissimilarity matrices** 
+
+
+```{r, message = FALSE}
+
+# Create all combinations of substance codes
+combinations <- expand.grid(Var1 = substance_codes, Var2 = substance_codes, stringsAsFactors = FALSE)
+combinations <- subset(combinations, Var1 != Var2)
+combinations <- subset(combinations, Var1 < Var2)
+column_names <- apply(combinations, 1, function(x) paste(x, collapse = "_"))
+
+
+# Loop through each subject's data
+for (i in as.numeric(df_filtered$ID)) {
+  subject_id <- i
+  
+  # Extract data for the current subject
+  subject_data <- df_filtered[df_filtered$ID == subject_id, ]
+  
+  # Create a data frame with substance codes as both rows and columns
+  subject_df <- data.frame(matrix(NA, nrow = length(substance_codes), ncol = length(substance_codes),dimnames = list(substance_codes, substance_codes)))
+  
+colnames(subject_df) <- substance_codes
+rownames(subject_df) <- substance_codes
+  
+  # Populate the data frame with values from the corresponding columns
+  for (code1 in substance_codes) {
+    for (code2 in substance_codes) {
+      col_name1 <- paste(code1, code2, sep = "")
+      col_name2 <- paste(code2, code1, sep = "")
+      if (col_name1 != col_name2) {
+        
+        if (!is.na(subject_data[[col_name1]])) {
+          subject_df[code1, code2] <- subject_data[[col_name1]]
+          subject_df[code2, code1] <- subject_data[[col_name1]]
+          
+        } else if (!is.na(subject_data[[col_name2]])) {
+          subject_df[code1, code2] <- subject_data[[col_name2]]
+          subject_df[code2, code1] <- subject_data[[col_name2]]
+        }
+      }
+    }
+  }
+  
+  # Assign the subject's data frame to the global environment with a unique name
+  assign(paste("df_", subject_id, sep = ""), subject_df, envir = .GlobalEnv)
+}
+
+# Remove redundant file
+rm(subject_df)
+rm(subject_data)
+
+# Create a list of all individual data frames
+list_df <- lapply(as.numeric(df_filtered$ID), function(i) {
+  df_name <- paste("df_", i, sep = "")
+  if (exists(df_name, envir = .GlobalEnv)) {
+    get(df_name)
+  } else {
+    NULL
+  }
+})
+
+## Derive averaged dissimilarity ratings and number of comparisons
+
+# Initialization of empty arrays
+comparisons_n <- matrix(0, nrow = ncol(list_df[[1]]), ncol = ncol(list_df[[1]]))
+dt_23 <- comparisons_n
+
+# Calculating average values and number of comparisons
+for (i in 1:length(list_df)) {
+  df <- list_df[[i]]
+  comparisons_n[!is.na(df)] <- comparisons_n[!is.na(df)] + 1
+  dt_23[!is.na(df)] <- dt_23[!is.na(df)] + as.numeric(df[!is.na(df)])
+}
+dt_23 <- dt_23 / comparisons_n
+
+# Adding names to rows and columns
+colnames(dt_23) <- substance_codes
+rownames(dt_23) <- substance_codes
+colnames(comparisons_n) <- substance_codes
+rownames(comparisons_n) <- substance_codes
+
+# Save the final matrix
+dt <- dt_23
+rm(df)
+
+# Remove states without the expected number of obtained ratings (Diphenidine,Datura,Benzydamine)
+dt <- dt[!(rownames(dt) %in% c("Diph", "Dat","Ben")), ]
+dt <- dt[, !(colnames(dt) %in% c("Diph", "Dat","Ben"))]
+
+
+```
+<br>
+<a name="S4"></a>
+&nbsp;
+
+**4. Encode exploratory variables into data frame** 
+
+```{r, fig.width= 10, fig.height= 7}
+
+# Reduce individual DFs to only present substances
+for (i in 1:length(list_df)) {
+  # Define the data frame name dynamically
+  df_name <- paste("df_", i, sep = "")
+  
+  # Access the data frame using get() and the dynamic name
+  df_i <- get(df_name)
+  
+  # Identify rows and columns with all NAs
+  rows_with_all_nas <- which(apply(is.na(df_i), 1, all))
+  cols_with_all_nas <- which(apply(is.na(df_i), 2, all))
+  
+  # Remove rows and columns with all NAs
+  df_i <- df_i[-rows_with_all_nas, -cols_with_all_nas]
+  
+  # Update the data frame in the global environment
+  assign(df_name, df_i)
+}
+
+# Replace NAs with 0 in individual reduced DFs
+for (i in 1:length(list_df)) {
+  # Define the data frame name dynamically
+  df_name <- paste("df_", i, sep = "")
+  
+  # Access the data frame using get() and the dynamic name
+  df_i <- get(df_name)
+
+  # Replace NA values with 0
+  df_i[is.na(df_i)] <- 0
+  
+  # Update the data frame in the global environment
+  assign(df_name, df_i)
+}
+
+# Extract vectors with values for unique comparisons and save in a data frame
+# Initialize an empty data frame for results
+results_df <- data.frame(Comparison = character(0), stringsAsFactors = FALSE)
+
+# Loop through unique substance code pairs
+for (substance1 in substance_codes) {
+  for (substance2 in substance_codes) {
+    if (substance1 != substance2) {  # Avoid self-comparisons
+      # Create a column name for the comparison
+      col_name <- paste(substance1, "_vs_", substance2, sep = "")
+      
+      # Initialize a vector to store comparison values
+      comparison_values <- character(0)
+      
+      # Loop through individual data frames
+      for (i in 1:length(list_df)) {
+        # Access the data frame by name
+        df_name <- paste("df_", i, sep = "")
+        df_i <- get(df_name)
+        
+        # Check if substances exist in the data frame
+        if (substance1 %in% rownames(df_i) && substance2 %in% colnames(df_i)) {
+          # Extract the dissimilarity value
+          value <- df_i[substance1, substance2]
+          comparison_values <- c(comparison_values, value)
+        } else {
+          # Use NA if comparison doesn't exist
+          comparison_values <- c(comparison_values, NA)
+        }
+      }
+      
+      # Create and add a row for this comparison
+      comparison_row <- data.frame(Comparison = col_name, t(comparison_values))
+      results_df <- rbind(results_df, comparison_row)
+    }
+  }
+}
+
+# Reduce symmetric rows (e.g. Alk_Kod, Kod_Alk)
+# Initialize a new data frame for reduced results
+results_df_reduced <- data.frame(Comparison = character(0), stringsAsFactors = FALSE)
+
+# Track unique comparisons
+unique_comparisons <- character(0)
+
+# Loop through rows in the original results_df
+for (i in 1:nrow(results_df)) {
+  current_comparison <- results_df$Comparison[i]
+  
+  # Check if symmetric comparison exists
+  symmetric_comparison <- paste(rev(unlist(strsplit(current_comparison, "_vs_"))), collapse = "_vs_")
+  
+  if (!(symmetric_comparison %in% unique_comparisons)) {
+    # Add new unique comparison
+    unique_comparisons <- c(unique_comparisons, current_comparison)
+    results_df_reduced  <- rbind(results_df_reduced , results_df[i, ])
+  }
+}
+
+# View the reduced results data frame
+View(results_df_reduced)
+ds <- results_df_reduced
+col_num <- ncol(ds) # original number of columns
+
+# Convert columns to numeric
+ds[, 2:col_num] <- sapply(ds[, 2:col_num], as.numeric)
+
+# Calculate mean dissimilarity and variance
+ds$mean_dissimilarity <- rowMeans(ds[2:col_num], na.rm = TRUE)
+ds$variance <- apply(ds[2:col_num], 1, sd, na.rm = TRUE)
+
+codes <- substance_codes
+
+# Initialize data frame for substance-related variables
+dss <- data.frame(state = codes, mean_dissimilarity = 0, variance = 0)
+
+# Aggregate data for each substance code
+for (code in codes) {
+  # Find rows in "ds" where the Comparison column contains the code
+  matching_rows <- ds[grep(code, ds$Comparison), ]
+  
+  # Calculate mean and standard deviation, excluding NA and NaN
+  mean_value <- mean(matching_rows$mean_dissimilarity, na.rm = TRUE)
+  sd_value <- mean(matching_rows$variance, na.rm = TRUE)
+  
+  # Update the aggregated data frame
+  dss[dss$state == code, "mean_dissimilarity"] <- mean_value
+  dss[dss$state == code, "variance"] <- sd_value
+}
+
+# Add dissimilarity to baseline variable
+dsb <- ds[c(1:22),]
+dsb$Comparison <- sub("Baseline_vs_", "", dsb$Comparison)
+names(dsb)[names(dsb) == "Comparison"] <- "state"
+
+# Calculate dissimilarity to baseline
+dsb$dissimilarity_to_baseline <- rowMeans(dsb[2:col_num], na.rm = TRUE)
+new_row <- data.frame(state = "Baseline", dissimilarity_to_baseline = 0)
+dsb <- dsb[,c(1, 743)]
+dsb <- rbind(dsb, new_row)
+dss <- left_join(dss, dsb)
+
+# Add confidence ratings
+dc <- df_filtered
+dc <- dc[, 538:560] # confidence ratings
+colnames(dc) <- sub("Conf.*$", "", colnames(dc))
+dc <- sapply(dc, as.numeric)
+col_means <- colMeans(dc, na.rm = TRUE) # calculate mean confidence for each substance from all subjects
+col_vars <- sqrt(colVars(dc, na.rm = TRUE))# calculate variance of confidence ratings
+
+# Convert the result into a new row and add it to the data frame
+dc <- rbind(dc, col_means, col_vars)
+
+# Rename the new row to something meaningful, e.g., "ColumnMeans"
+rownames(dc)[(nrow(dc))-1] <- "confidence"
+rownames(dc)[nrow(dc)] <- "confidence_variance"
+dc <- as.data.frame(dc)
+
+# Reduce to essential variables
+dc_confidence <- as.data.frame(dc[(nrow(dc) - 1), ])# extract mean confidence variable
+dc_confidence$state <- rownames(dc_confidence)
+dc_confidence_variance <- as.data.frame(dc[nrow(dc), ])
+dc_confidence_variance$state <- rownames(dc_confidence_variance)
+dc_confidence_variance <- gather(dc_confidence_variance, key = "state", value = "confidence_variance")
+dc_confidence<- gather(dc_confidence, key = "state", value = "confidence")
+
+# Merge data frames
+dss <- left_join(dss, dc_confidence)
+dss <- left_join(dss, dc_confidence_variance)
+
+```
+
+
+<br>
+<a name="S5"></a>
+&nbsp;
+
+**5. Analyze exploratory variables**
+
+```{r, fig.width= 7, fig.height= 3.5}
+
+dss <- dss[!(dss$state %in% c("Dat", "Ben", "Diph")), ]
+
+point_col <- c(
+  Baseline = "#2B2B2B",    
+  Alc = "#8A99BF", #Alcohol      
+  MJ = "#327D43",  #Marijuana         
+  MDMA = "#7B3894",#MDMA        
+  Amf = "#8B2B2B", #Amphetamine       
+  LSD = "#5998BA", #LSD         
+  Psy = "#5DADB3", #Psylocybine
+  Mef = "#A23E71", #Mephedrone
+  Coc = "#BF436E", #Cocaine
+  Alp = "#6B86B0", #Aplrazolam
+  Ket = "#505CB9", #Ketamine
+  DMT = "#108BB8", #DMT
+  N2O = "#6861C7", #Nitrous Oxide  
+  DXM = "#7A65A8", #DXM
+  Cod = "#ACA232", #Codeine
+  Tra = "#AC845F", #Tramadol
+  Her = "#755B28", #Heroine/Morphine
+  Salv = "#AFA0BD", #Salvia Divinorum
+  GHB = "#617991", #GHB
+  `2CB` = "#6AA4BA"  #2CB
+)
+
+shapiro.test(dss$confidence)
+shapiro.test(dss$confidence_variance)
+shapiro.test(dss$variance)
+
+# Function to create a scatter plot with correlation info
+create_scatter_plot <- function(data, x_var, y_var, x_label, y_label) {
+  # Calculate Pearson correlation
+  cor_test <- cor.test(data[[x_var]], data[[y_var]])
+  r <- round(cor_test$estimate, 3)
+  p_value <- cor_test$p.value
+  df <- cor_test$parameter
+  
+  # Format p-value
+  if (p_value < 0.001) {
+    p_text <- "p < 0.001"
+  } else {
+    p_text <- paste("p =", format(p_value, digits = 3))
+  }
+  
+  # Create the stats text
+  stats_text <- paste0("r(", df, ") = ", r, " ", p_text)
+  
+  # Create the plot
+  ggplot(data, aes_string(x = x_var, y = y_var)) +
+    geom_point(color = "#3b528b", alpha = 0.6) +
+    geom_smooth(method = "lm", color = "#21918c", se = FALSE) +
+    labs(
+      x = x_label,
+      y = y_label
+    ) +
+    annotate("text", x = Inf, y = Inf, label = stats_text, 
+             hjust = 1, vjust = 1, size = 3, color = "black") +
+    theme_minimal() +
+    theme(axis.title = element_text(size = 10))
+}
+
+# Create the three plots
+plot1 <- create_scatter_plot(dss, "variance", "confidence", 
+                             "Dissimilarity ratings (SD)", "Confidence")
+plot2 <- create_scatter_plot(dss, "variance", "confidence_variance", 
+                             "Dissimilarity ratings (SD)", "Confidence (SD)")
+plot3 <- create_scatter_plot(dss, "confidence", "confidence_variance", 
+                             "Confidence", "Confidence (SD)")
+
+# Combine the plots side by side
+combined_plot <- plot1 + plot2 + plot3 +
+  plot_layout(ncol = 3) +
+  plot_annotation(
+    theme = theme(plot.margin = margin(t = 10, r = 10, b = 10, l = 10, unit = "pt"))
+  )
+
+# Display the combined plot
+print(combined_plot)
+
+```
+
+
+<br>
+<a name="S6"></a>
+&nbsp;
+**6. 4D Multidimensional scaling**
+
+```{r, fig.width= 8, fig.height=8}
+
+## Perform 3D Multidimensional Scaling
+model4d <- mds(dt, ndim = 4, type = "ordinal", init = "torgerson")
+
+mds_df <- data.frame(Dim1 = model4d$conf[,1],
+                     Dim2 = model4d$conf[,2],
+                     Dim3 = model4d$conf[,3],
+                     Dim4 = model4d$conf[,4])
+
+# Calculate and display stress value
+stress_val = round(model4d$stress,4)
+stress_val
+labels <- colnames(dt)
+
+## Plot 4D MDS model - with color as the 4th dimension
+custom_colors <- colorRampPalette(c("deepskyblue3", "deeppink3"))(10)
+#custom_colors <- colorRampPalette(c("black", "goldenrod3"))(10)
+
+axis_limits = c(-0.9,0.9)
+# Create an interactive 4D scatter plot with equally sized points
+p <- plot_ly(
+  data = mds_df,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~Dim4,  # Use Dim4 for color
+  colors = custom_colors,  # Use the original custom_colors
+  type = 'scatter3d',
+  mode = 'markers')
+
+# Add text labels next to the data points with black color
+p <- p %>% add_text(
+  text = ~labels, ### OPTIONAL: labels_full (datapoints)
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black"))
+
+# Edit layout
+p <- p %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+    aspectmode = "cube"
+  ),
+  title = paste("4D MDS (Stress =", round(model4d$stress,3), ")"),
+  legend = list(
+    title = list(text = 'Dim4'),  # Add legend title for Dim4
+    traceorder = "normal",
+    itemsizing = "constant"
+  )
+)
+
+# Print the plot
+p
+
+## Plot 4D MDS model - with color as the 1st dimension
+custom_colors <- colorRampPalette(c("black", "cyan3"))(10)
+
+p_alt <- plot_ly(
+  data = mds_df, 
+  x = ~Dim2, y = ~Dim3, z = ~Dim4, 
+  color = ~Dim1, 
+  colors = custom_colors,
+  type = 'scatter3d',
+  mode = 'markers'
+) %>%
+  add_markers() %>%
+  layout(
+    scene = list(
+      xaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+      yaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+      zaxis = list(title = 'Dim4', titlefont = list(size = 16, family = "Arial", weight = "bold"), range = axis_limits),
+      aspectmode = "cube"
+    ),
+    title = "4D MDS Plot (Dim1 as color)",
+    legend = list(title = list(text = 'Dim1'))
+  ) %>%
+  add_text(text = ~labels, textposition = "top right", showlegend = FALSE)
+
+# Print the alternative plot
+p_alt
+
+
+## Create a sequence of plots to represent 4D MDS
+# Function to create a 3D plot
+create_3d_plot <- function(df, x_col, y_col, z_col, color_col, title) {
+  plot_ly(
+    data = df,
+    x = ~get(x_col), y = ~get(y_col), z = ~get(z_col),
+    color = ~get(color_col),
+    colors = colorRamp(c("blue", "red")),
+    type = 'scatter3d',
+    mode = 'markers+text',
+    marker = list(size = 5),
+    text = rownames(df),
+    textposition = "top center",
+    hoverinfo = 'text',
+    hovertext = ~paste(
+      rownames(df), "<br>",
+      x_col, ": ", signif(get(x_col), 3), "<br>",
+      y_col, ": ", signif(get(y_col), 3), "<br>",
+      z_col, ": ", signif(get(z_col), 3), "<br>",
+      color_col, ": ", signif(get(color_col), 3)
+    )
+  ) %>%
+  layout(
+    scene = list(
+      aspectmode = "cube",
+      xaxis = list(title = x_col, titlefont = list(size = 14, family = "Arial", weight = "bold"), range = axis_limits),
+      yaxis = list(title = y_col, titlefont = list(size = 14, family = "Arial", weight = "bold"), range = axis_limits),
+      zaxis = list(title = z_col, titlefont = list(size = 14, family = "Arial", weight = "bold"), range = axis_limits)
+    ),
+    title = title
+  )
+}
+
+# Create four 3D plots
+p1 <- create_3d_plot(mds_df, "Dim1", "Dim2", "Dim3", "Dim4", "4D MDS: Dim1, Dim2, Dim3 (Color: Dim4)")
+p1
+p2 <- create_3d_plot(mds_df, "Dim1", "Dim2", "Dim4", "Dim3", "4D MDS: Dim1, Dim2, Dim4 (Color: Dim3)")
+p2
+p3 <- create_3d_plot(mds_df, "Dim1", "Dim3", "Dim4", "Dim2", "4D MDS: Dim1, Dim3, Dim4 (Color: Dim2)")
+p3
+p4 <- create_3d_plot(mds_df, "Dim2", "Dim3", "Dim4", "Dim1", "4D MDS: Dim2, Dim3, Dim4 (Color: Dim1)")
+p4
+
+## OPTIONAL: Create interactive SHINY app plot to explore the data
+# plot_4d_mds <- function(df, x_col = "Dim1", y_col = "Dim2", z_col = "Dim3", color_col = "Dim4") {
+#   plot_ly(
+#     data = df,
+#     x = ~get(x_col), y = ~get(y_col), z = ~get(z_col),
+#     color = ~get(color_col),
+#     colors = colorRamp(c("blue", "red")),
+#     type = 'scatter3d',
+#     mode = 'markers+text',
+#     marker = list(size = 5),
+#     text = rownames(df),
+#     textposition = "top center",
+#     hoverinfo = 'text',
+#     hovertext = ~paste(
+#       rownames(df), "<br>",
+#       "Dim1:", signif(Dim1, 3), "<br>",
+#       "Dim2:", signif(Dim2, 3), "<br>",
+#       "Dim3:", signif(Dim3, 3), "<br>",
+#       "Dim4:", signif(Dim4, 3)
+#     )
+#   ) %>%
+#   layout(
+#     scene = list(
+#       aspectmode = "cube",
+#       xaxis = list(title = x_col),
+#       yaxis = list(title = y_col),
+#       zaxis = list(title = z_col)
+#     ),
+#     title = paste("4D MDS Visualization (", x_col, y_col, z_col, "color:", color_col, ")")
+#   )
+# }
+# p <- plot_4d_mds(mds_df)
+# print(p)
+# 
+# ui <- dashboardPage(
+#   dashboardHeader(title = "4D MDS Visualization"),
+#   dashboardSidebar(
+#     selectInput("x_axis", "X-axis", choices = c("Dim1", "Dim2", "Dim3", "Dim4")),
+#     selectInput("y_axis", "Y-axis", choices = c("Dim1", "Dim2", "Dim3", "Dim4")),
+#     selectInput("z_axis", "Z-axis", choices = c("Dim1", "Dim2", "Dim3", "Dim4")),
+#     selectInput("color", "Color", choices = c("Dim1", "Dim2", "Dim3", "Dim4"))
+#   ),
+#   dashboardBody(
+#     plotlyOutput("mds_plot")
+#   )
+# )
+# 
+# server <- function(input, output) {
+#   output$mds_plot <- renderPlotly({
+#     plot_4d_mds(mds_df, input$x_axis, input$y_axis, input$z_axis, input$color)
+#   })
+# }
+# 
+# shinyApp(ui, server)
+
+```
+
+
+
+```{r}
+
+
+```
+
+
+<br>
+<a name="S7"></a>
+&nbsp;
+
+**7. Heatmaps for high-dimensional data**
+
+
+```{r, fig.width=7, fig.height=5.5, message=FALSE, warning=FALSE}
+
+# Function to create and print heatmap
+create_heatmap <- function(mds_df, dim) {
+  heatmap_plot <- pheatmap(as.matrix(mds_df), 
+           main = paste(dim, "D MDS - Heatmap with Clustering for Different States"),
+           show_rownames = TRUE, 
+           show_colnames = TRUE,
+           color = colorRampPalette(c("navy", "white", "deeppink4"))(50),
+           clustering_distance_rows = "euclidean",
+           clustering_distance_cols = "euclidean",
+           clustering_method = "complete",
+           border_color = NA,
+           fontsize = 10,
+           fontsize_row = 8,
+           fontsize_col = 8)
+  print(heatmap_plot)
+}
+
+# 4D Model
+model4d <- mds(dt, ndim = 4, type = "ordinal", init = "torgerson")
+mds_df_4d <- data.frame(Dim1 = model4d$conf[,1],
+                        Dim2 = model4d$conf[,2],
+                        Dim3 = model4d$conf[,3],
+                        Dim4 = model4d$conf[,4])
+create_heatmap(mds_df_4d, "4")
+
+# 6D Model
+model6d <- mds(dt, ndim = 6, type = "ordinal", init = "torgerson")
+mds_df_6d <- data.frame(Dim1 = model6d$conf[,1],
+                        Dim2 = model6d$conf[,2],
+                        Dim3 = model6d$conf[,3],
+                        Dim4 = model6d$conf[,4],
+                        Dim5 = model6d$conf[,5],
+                        Dim6 = model6d$conf[,6])
+create_heatmap(mds_df_6d, "6")
+
+# 8D Model
+model8d <- mds(dt, ndim = 8, type = "ordinal", init = "torgerson")
+mds_df_8d <- data.frame(Dim1 = model8d$conf[,1],
+                        Dim2 = model8d$conf[,2],
+                        Dim3 = model8d$conf[,3],
+                        Dim4 = model8d$conf[,4],
+                        Dim5 = model8d$conf[,5],
+                        Dim6 = model8d$conf[,6],
+                        Dim7 = model8d$conf[,7],
+                        Dim8 = model8d$conf[,8])
+create_heatmap(mds_df_8d, "8")
+
+# export 4 x 5 cm
+
+```
+
+<br>
+<a name="S8"></a>
+&nbsp;
+
+**8. Andrews curves for high-dimensional data**
+
+```{r, fig.width=12, fig.height=7, message=FALSE, warning=FALSE}
+
+
+# Define the grouping with colors in the correct order
+group_col <- c(
+  Baseline = "#2B2B2B",    
+  Depressants = "#8A99BF",    
+  Opioids = "#ACA232",
+  Stimulants = "#A23E71",       
+  MDMA = "#7B3894",       
+  Marijuana = "#327D43",          
+  Psychedelics = "#5998BA",         
+  Dissociatives = "#505CB9"
+)
+
+# Function to create semi-transparent colors
+add_alpha <- function(col, alpha=0.1) {
+  rgb(t(col2rgb(col)), alpha=alpha*255, maxColorValue=255)
+}
+
+# Create a vector of line types for individual substances
+line_types <- c("solid", "dotdash", "solid", "solid", "longdash", 
+                "solid", "solid", "longdash", "longdash", "dotdash",
+                "solid", "solid", "solid", "solid", "dotdash",
+                "dotdash", "dotdash", "solid", "dotdash", "solid")
+
+# Function to plot Andrews curves for individual substances
+plot_andrews_individual <- function(mds_df, dim) {
+  color_vector <- point_col[rownames(mds_df)]
+  transparent_color_vector <- sapply(color_vector, add_alpha)
+  
+  andrews(as.matrix(mds_df), 
+          ymax = 4, 
+          main = paste(dim, "D MDS - Andrews Curves for Individual Substances"), 
+          clr = transparent_color_vector,
+          lwd = 2,
+          step = 200,
+          lty = line_types)
+  
+  legend("topright", 
+         legend = rownames(mds_df), 
+         col = color_vector,
+         lty = line_types,
+         cex = 0.7, 
+         xpd = TRUE,
+         inset = c(-0.1, 0),
+         title = "Substances")
+}
+
+# Function to create grouped data
+create_grouped_data <- function(mds_df) {
+  data.frame(
+    Baseline = colMeans(mds_df["Baseline", , drop = FALSE]),
+    Depressants = colMeans(mds_df[c("Alc", "Alp", "GHB"), ]),
+    Opioids = colMeans(mds_df[c("Tra", "Cod", "Her"), ]),
+    Stimulants = colMeans(mds_df[c("Coc", "Mef", "Amf"), ]),
+    MDMA = colMeans(mds_df["MDMA", , drop = FALSE]),
+    Marijuana = colMeans(mds_df["MJ", , drop = FALSE]),
+    Psychedelics = colMeans(mds_df[c("LSD", "Psy", "DMT", "2CB"), ]),
+    Dissociatives = colMeans(mds_df[c("Ket", "N2O", "DXM", "Salv"), ])
+  )
+}
+
+# Function to plot Andrews curves for grouped substances
+plot_andrews_grouped <- function(grouped_mds, dim) {
+  andrews(t(grouped_mds), 
+          ymax = 4, 
+          main = paste(dim, "D MDS - Andrews Curves for Grouped Substances"), 
+          clr = group_col,
+          lwd = 2,
+          step = 200,
+          lty = c("solid","longdash","longdash","solid","solid","dashed","solid","solid"))
+  
+  legend("topright", 
+         legend = names(group_col),
+         col = group_col,
+         lty = c("solid","longdash","longdash","solid","solid","dashed","solid","solid"),
+         lwd = 2,
+         cex = 0.7, 
+         xpd = TRUE,
+         inset = c(-0.2, 0),
+         title = "Substance Groups")
+}
+
+# 4D Model
+par(mfrow = c(1, 1), mar = c(5, 4, 4, 10) + 0.1)
+plot_andrews_individual(mds_df_4d, "4")
+plot_andrews_grouped(create_grouped_data(mds_df_4d), "4")
+
+# 6D Model
+par(mfrow = c(1, 1), mar = c(5, 4, 4, 10) + 0.1)
+plot_andrews_individual(mds_df_6d, "6")
+plot_andrews_grouped(create_grouped_data(mds_df_6d), "6")
+
+# 8D Model
+par(mfrow = c(1, 1), mar = c(5, 4, 4, 10) + 0.1)
+plot_andrews_individual(mds_df_8d, "8")
+plot_andrews_grouped(create_grouped_data(mds_df_8d), "8")
+
+# Interpretation of Andrews Curves:
+# - Each dimension contributes to the entire curve shape, not just specific points.
+# - x1 affects the overall vertical shift of the curve.
+# - x2 and x3 contribute to the primary sinusoidal shape.
+# - x4 and higher dimensions add higher frequency components to the curve.
+# - Similar curve shapes suggest similarity in the multidimensional space.
+# - Differences in curve shapes, especially at peaks and troughs, indicate differences in the space.
+# - This visualization allows you to compare the entire multidimensional structure of each point (state) in a 2D plot.
+# - The power of Andrews curves is in showing overall similarities and differences between multidimensional points, not in isolating individual dimensions.
+# - Grouped curves show average characteristics of substance classes, potentially revealing broader patterns.
+# - Comparing individual and grouped plots can highlight which substances are typical or atypical for their class.
+```
+
+
+<br>
+<a name="S9"></a>
+&nbsp;
+
+**9. Subspaces for substance classes**
+
+```{r, fig.width=6.5, fig.height=5.5}
+
+# Updated color scheme
+point_col <- c(
+  Baseline = "#2B2B2B", Alc = "#8A99BF", MJ = "#327D43", MDMA = "#7B3894",
+  Amf = "#8B2B2B", LSD = "#5998BA", Psy = "#5DADB3", Mef = "#A23E71",
+  Coc = "#BF436E", Alp = "#6B86B0", Ket = "#505CB9", DMT = "#108BB8",
+  N2O = "#6861C7", DXM = "#7A65A8", Cod = "#ACA232", Tra = "#AC845F",
+  Her = "#755B28", Salv = "#AFA0BD", GHB = "#617991", `2CB` = "#6AA4BA"
+)
+
+# Calculate overall x and y axis limits for all datasets
+get_axis_limits <- function(...) {
+  datasets <- list(...)
+  all_coords <- do.call(rbind, lapply(datasets, function(model) as.data.frame(model$conf)))
+  xlim <- range(all_coords$D1)
+  ylim <- range(all_coords$D2)
+  return(list(xlim = xlim, ylim = ylim))
+}
+
+# Function to create 2D MDS plot with fixed axis limits
+create_2d_mds_plot <- function(model, title, axis_limits) {
+  coords <- as.data.frame(model$conf)
+  states <- rownames(coords)
+  sizes <- sqrt(model$spp)
+  sizes <- ((sizes - min(sizes)) / (max(sizes) - min(sizes))) * (9 - 4) + 4
+  
+  p <- ggplot(coords, aes(x = D1, y = D2)) +
+    geom_point(color = alpha(point_col[states], 0.5), size = sizes) + 
+    geom_point(color = point_col[states], size = 2) +                       
+    geom_text(aes(label = states), hjust = -0.5, vjust = -0.5, size = 3) +
+    labs(title = title, x = "Dimension 1", y = "Dimension 2") +
+    coord_fixed(xlim = axis_limits$xlim, ylim = axis_limits$ylim) +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  return(p)
+}
+
+
+# Manually extracting subsets for each subgroup
+dt_set_stimulants_and_depressants <- dt[rownames(dt) %in% c("Amf", "Mef", "Coc", "Alc", "Alp", "Her", "Tra", "Cod", "GHB", "Baseline"), ]
+dt_set_stimulants_and_depressants <- dt_set_stimulants_and_depressants[, colnames(dt_set_stimulants_and_depressants) %in% c("Amf", "Mef", "Coc", "Alc", "Alp", "Her", "Tra", "Cod", "GHB", "Baseline")]
+
+dt_set_stimulants_and_depressants_with_mdma_mj <- dt[rownames(dt) %in% c("Amf", "Mef", "Coc", "Alc", "Alp", "Her", "Tra", "Cod", "GHB", "Baseline", "MDMA", "MJ"), ]
+dt_set_stimulants_and_depressants_with_mdma_mj <- dt_set_stimulants_and_depressants_with_mdma_mj[, colnames(dt_set_stimulants_and_depressants_with_mdma_mj) %in% c("Amf", "Mef", "Coc", "Alc", "Alp", "Her", "Tra", "Cod", "GHB", "Baseline", "MDMA", "MJ")]
+
+dt_set_psychedelics_and_dissociatives <- dt[rownames(dt) %in% c("LSD", "Psy", "2CB", "DMT", "Salv", "Ket", "DXM", "N2O"), ]
+dt_set_psychedelics_and_dissociatives <- dt_set_psychedelics_and_dissociatives[, colnames(dt_set_psychedelics_and_dissociatives) %in% c("LSD", "Psy", "2CB", "DMT", "Salv", "Ket", "DXM", "N2O")]
+
+dt_set_psychedelics_and_dissociatives_with_mdma_mj <- dt[rownames(dt) %in% c("LSD", "Psy", "2CB", "DMT", "Salv", "Ket", "DXM", "N2O", "MDMA", "MJ"), ]
+dt_set_psychedelics_and_dissociatives_with_mdma_mj <- dt_set_psychedelics_and_dissociatives_with_mdma_mj[, colnames(dt_set_psychedelics_and_dissociatives_with_mdma_mj) %in% c("LSD", "Psy", "2CB", "DMT", "Salv", "Ket", "DXM", "N2O", "MDMA", "MJ")]
+
+dt_set_psychedelics_and_dissociatives_with_mdma_mj_baseline <- dt[rownames(dt) %in% c("LSD", "Psy", "2CB", "DMT", "Salv", "Ket", "DXM", "N2O", "MDMA", "MJ", "Baseline"), ]
+
+dt_set_psychedelics_and_dissociatives_with_mdma_mj_baseline <- dt_set_psychedelics_and_dissociatives_with_mdma_mj_baseline[, colnames(dt_set_psychedelics_and_dissociatives_with_mdma_mj_baseline) %in% c("LSD", "Psy", "2CB", "DMT", "Salv", "Ket", "DXM", "N2O", "MDMA", "MJ", "Baseline")]
+
+
+# Perform MDS for all datasets (2D and 3D separately)
+m2o_sd <- mds(dt_set_stimulants_and_depressants, ndim = 2, type = "ordinal", init = "torgerson")
+
+m2o_sd_mdma_mj <- mds(dt_set_stimulants_and_depressants_with_mdma_mj, ndim = 2, type = "ordinal", init = "torgerson")
+
+m2o_pd <- mds(dt_set_psychedelics_and_dissociatives, ndim = 2, type = "ordinal", init = "torgerson")
+
+m2o_pd_mdma_mj <- mds(dt_set_psychedelics_and_dissociatives_with_mdma_mj, ndim = 2, type = "ordinal", init = "torgerson")
+
+m2o_pd_mdma_mj_baseline <- mds(dt_set_psychedelics_and_dissociatives_with_mdma_mj_baseline, ndim = 2, type = "ordinal", init = "torgerson")
+
+# Get axis limits for all 2D plots
+axis_limits <- get_axis_limits(m2o_sd, m2o_sd_mdma_mj, m2o_pd, m2o_pd_mdma_mj, m2o_pd_mdma_mj_baseline)
+
+# Plot 1: Stimulants and Depressants
+p1_sd <- create_2d_mds_plot(
+  m2o_sd, 
+  paste("Stimulants and Depressants \n (Stress =", round(m2o_sd$stress, 3), ")"), 
+  axis_limits)
+
+# Plot 2: Stimulants and Depressants with MDMA & Marijuana
+p2_sd_mdma_mj <- create_2d_mds_plot(
+  m2o_sd_mdma_mj, 
+  paste("Stimulants and Depressants with MDMA & Marijuana \n (Stress =", round(m2o_sd_mdma_mj$stress, 3), ")"),
+  axis_limits)
+
+# Plot 3: Psychedelics and Dissociatives
+p3_pd <- create_2d_mds_plot(
+  m2o_pd, 
+  paste("Psychedelics and Dissociatives \n (Stress =", round(m2o_pd$stress, 3), ")"), 
+  axis_limits)
+
+# Plot 4: Psychedelics and Dissociatives with MDMA & Marijuana
+p4_pd_mdma_mj <- create_2d_mds_plot(
+  m2o_pd_mdma_mj, 
+  paste("Psychedelics and Dissociatives with MDMA & Marijuana \n (Stress =", round(m2o_pd_mdma_mj$stress, 3), ")"), axis_limits)
+
+# Plot 5: Psychedelics and Dissociatives with MDMA, Marijuana, & Baseline
+p5_pd_mdma_mj_baseline <- create_2d_mds_plot(
+  m2o_pd_mdma_mj_baseline, 
+  paste("Psychedelics and Dissociatives with MDMA, Marijuana, & Baseline \n (Stress =", round(m2o_pd_mdma_mj_baseline$stress, 3), ")"), axis_limits )
+
+#### Display the plots in order (2D first, then 3D)
+print(p1_sd)
+
+## Perform 3D Multidimensional Scaling using dt_set_stimulants_and_depressants
+model3d_stimulants_and_depressants <- mds(dt_set_stimulants_and_depressants, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_stimulants_and_depressants <- round(model3d_stimulants_and_depressants$stress, 4)
+stress_val_stimulants_and_depressants
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_stimulants_and_depressants <- model3d_stimulants_and_depressants$spp
+# Apply square-root transformation to point sizes
+sizes_o_stimulants_and_depressants <- sqrt(sizes_o_stimulants_and_depressants)
+
+# Normalize point sizes for better visibility
+min_range <- 6
+max_range <- 16
+sizes_o_stimulants_and_depressants <- ((sizes_o_stimulants_and_depressants - min(sizes_o_stimulants_and_depressants)) / 
+                                        (max(sizes_o_stimulants_and_depressants) - min(sizes_o_stimulants_and_depressants))) * 
+                                        (max_range - min_range) + min_range
+
+# Create data frame with dimensions and sizes
+labels_stimulants_and_depressants <- rownames(model3d_stimulants_and_depressants$conf)
+
+# Ensure that the sizes_o is properly matched with the correct labels
+# This aligns only the relevant subset of point_col with sizes_o
+sizes_o_stimulants_and_depressants <- sizes_o_stimulants_and_depressants[match(labels_stimulants_and_depressants, labels_stimulants_and_depressants)]
+
+# Now create the plot using plotly
+mds_df_stimulants_and_depressants <- data.frame(
+  Dim1 = model3d_stimulants_and_depressants$conf[, 1],
+  Dim2 = model3d_stimulants_and_depressants$conf[, 2],
+  Dim3 = model3d_stimulants_and_depressants$conf[, 3],
+  labels = labels_stimulants_and_depressants,
+  sizes = sizes_o_stimulants_and_depressants,
+  labels_factor = factor(labels_stimulants_and_depressants, levels = labels_stimulants_and_depressants)
+)
+
+# Plot the 3D scatter plot using plotly
+p_stimulants_and_depressants <- plot_ly()
+p_stimulants_and_depressants <- p_stimulants_and_depressants %>% add_trace(
+  data = mds_df_stimulants_and_depressants,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_stimulants_and_depressants],  # Apply colors only to the subset
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_stimulants_and_depressants <- p_stimulants_and_depressants %>% add_trace(
+  data = mds_df_stimulants_and_depressants,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_stimulants_and_depressants],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_stimulants_and_depressants <- p_stimulants_and_depressants %>% add_text(
+  data = mds_df_stimulants_and_depressants,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_stimulants_and_depressants <- p_stimulants_and_depressants %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Stimulants and Depressants \n (Stress =", stress_val_stimulants_and_depressants, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_stimulants_and_depressants
+
+
+#### Display the plots in order (2D first, then 3D)
+print(p2_sd_mdma_mj)
+
+## Perform 3D Multidimensional Scaling using dt_set_stimulants_and_depressants_with_mdma_mj
+model3d_stimulants_and_depressants_with_mdma_mj <- mds(dt_set_stimulants_and_depressants_with_mdma_mj, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_stimulants_and_depressants_with_mdma_mj <- round(model3d_stimulants_and_depressants_with_mdma_mj$stress, 4)
+stress_val_stimulants_and_depressants_with_mdma_mj
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_stimulants_and_depressants_with_mdma_mj <- model3d_stimulants_and_depressants_with_mdma_mj$spp
+# Apply square-root transformation to point sizes
+sizes_o_stimulants_and_depressants_with_mdma_mj <- sqrt(sizes_o_stimulants_and_depressants_with_mdma_mj)
+
+# Normalize point sizes for better visibility
+min_range <- 6
+max_range <- 16
+sizes_o_stimulants_and_depressants_with_mdma_mj <- ((sizes_o_stimulants_and_depressants_with_mdma_mj - min(sizes_o_stimulants_and_depressants_with_mdma_mj)) / 
+                                                    (max(sizes_o_stimulants_and_depressants_with_mdma_mj) - min(sizes_o_stimulants_and_depressants_with_mdma_mj))) * 
+                                                    (max_range - min_range) + min_range
+
+# Create data frame with dimensions and sizes
+labels_stimulants_and_depressants_with_mdma_mj <- rownames(model3d_stimulants_and_depressants_with_mdma_mj$conf)
+
+# Ensure that the sizes_o is properly matched with the correct labels
+sizes_o_stimulants_and_depressants_with_mdma_mj <- sizes_o_stimulants_and_depressants_with_mdma_mj[match(labels_stimulants_and_depressants_with_mdma_mj, labels_stimulants_and_depressants_with_mdma_mj)]
+
+# Now create the plot using plotly
+mds_df_stimulants_and_depressants_with_mdma_mj <- data.frame(
+  Dim1 = model3d_stimulants_and_depressants_with_mdma_mj$conf[, 1],
+  Dim2 = model3d_stimulants_and_depressants_with_mdma_mj$conf[, 2],
+  Dim3 = model3d_stimulants_and_depressants_with_mdma_mj$conf[, 3],
+  labels = labels_stimulants_and_depressants_with_mdma_mj,
+  sizes = sizes_o_stimulants_and_depressants_with_mdma_mj,
+  labels_factor = factor(labels_stimulants_and_depressants_with_mdma_mj, levels = labels_stimulants_and_depressants_with_mdma_mj)
+)
+
+# Plot the 3D scatter plot using plotly
+p_stimulants_and_depressants_with_mdma_mj <- plot_ly()
+p_stimulants_and_depressants_with_mdma_mj <- p_stimulants_and_depressants_with_mdma_mj %>% add_trace(
+  data = mds_df_stimulants_and_depressants_with_mdma_mj,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_stimulants_and_depressants_with_mdma_mj],  # Apply colors only to the subset
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_stimulants_and_depressants_with_mdma_mj <- p_stimulants_and_depressants_with_mdma_mj %>% add_trace(
+  data = mds_df_stimulants_and_depressants_with_mdma_mj,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_stimulants_and_depressants_with_mdma_mj],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_stimulants_and_depressants_with_mdma_mj <- p_stimulants_and_depressants_with_mdma_mj %>% add_text(
+  data = mds_df_stimulants_and_depressants_with_mdma_mj,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_stimulants_and_depressants_with_mdma_mj <- p_stimulants_and_depressants_with_mdma_mj %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Stimulants and Depressants with MDMA & MJ \n (Stress =", stress_val_stimulants_and_depressants_with_mdma_mj, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_stimulants_and_depressants_with_mdma_mj
+
+#### Display the plots in order (2D first, then 3D)
+print(p3_pd)
+
+## Perform 3D Multidimensional Scaling using dt_set_psychedelics_and_dissociatives
+model3d_psychedelics_and_dissociatives <- mds(dt_set_psychedelics_and_dissociatives, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_psychedelics_and_dissociatives <- round(model3d_psychedelics_and_dissociatives$stress, 4)
+stress_val_psychedelics_and_dissociatives
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_psychedelics_and_dissociatives <- model3d_psychedelics_and_dissociatives$spp
+# Apply square-root transformation to point sizes
+sizes_o_psychedelics_and_dissociatives <- sqrt(sizes_o_psychedelics_and_dissociatives)
+
+# Normalize point sizes for better visibility
+min_range <- 6
+max_range <- 16
+sizes_o_psychedelics_and_dissociatives <- ((sizes_o_psychedelics_and_dissociatives - min(sizes_o_psychedelics_and_dissociatives)) / 
+                                           (max(sizes_o_psychedelics_and_dissociatives) - min(sizes_o_psychedelics_and_dissociatives))) * 
+                                           (max_range - min_range) + min_range
+
+# Create data frame with dimensions and sizes
+labels_psychedelics_and_dissociatives <- rownames(model3d_psychedelics_and_dissociatives$conf)
+
+# Ensure that the sizes_o is properly matched with the correct labels
+sizes_o_psychedelics_and_dissociatives <- sizes_o_psychedelics_and_dissociatives[match(labels_psychedelics_and_dissociatives, labels_psychedelics_and_dissociatives)]
+
+# Now create the plot using plotly
+mds_df_psychedelics_and_dissociatives <- data.frame(
+  Dim1 = model3d_psychedelics_and_dissociatives$conf[, 1],
+  Dim2 = model3d_psychedelics_and_dissociatives$conf[, 2],
+  Dim3 = model3d_psychedelics_and_dissociatives$conf[, 3],
+  labels = labels_psychedelics_and_dissociatives,
+  sizes = sizes_o_psychedelics_and_dissociatives,
+  labels_factor = factor(labels_psychedelics_and_dissociatives, levels = labels_psychedelics_and_dissociatives)
+)
+
+# Plot the 3D scatter plot using plotly
+p_psychedelics_and_dissociatives <- plot_ly()
+p_psychedelics_and_dissociatives <- p_psychedelics_and_dissociatives %>% add_trace(
+  data = mds_df_psychedelics_and_dissociatives,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_psychedelics_and_dissociatives],  # Apply colors only to the subset
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_psychedelics_and_dissociatives <- p_psychedelics_and_dissociatives %>% add_trace(
+  data = mds_df_psychedelics_and_dissociatives,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_psychedelics_and_dissociatives],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_psychedelics_and_dissociatives <- p_psychedelics_and_dissociatives %>% add_text(
+  data = mds_df_psychedelics_and_dissociatives,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_psychedelics_and_dissociatives <- p_psychedelics_and_dissociatives %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Psychedelics and Dissociatives (Stress =", stress_val_psychedelics_and_dissociatives, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_psychedelics_and_dissociatives
+
+
+#### Display the plots in order (2D first, then 3D)
+print(p4_pd_mdma_mj)
+
+## Perform 3D Multidimensional Scaling using dt_set_psychedelics_and_dissociatives_with_mdma_mj
+model3d_psychedelics_and_dissociatives_with_mdma_mj <- mds(dt_set_psychedelics_and_dissociatives_with_mdma_mj, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_psychedelics_and_dissociatives_with_mdma_mj <- round(model3d_psychedelics_and_dissociatives_with_mdma_mj$stress, 4)
+stress_val_psychedelics_and_dissociatives_with_mdma_mj
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_psychedelics_and_dissociatives_with_mdma_mj <- model3d_psychedelics_and_dissociatives_with_mdma_mj$spp
+# Apply square-root transformation to point sizes
+sizes_o_psychedelics_and_dissociatives_with_mdma_mj <- sqrt(sizes_o_psychedelics_and_dissociatives_with_mdma_mj)
+
+# Normalize point sizes for better visibility
+min_range <- 6
+max_range <- 16
+sizes_o_psychedelics_and_dissociatives_with_mdma_mj <- ((sizes_o_psychedelics_and_dissociatives_with_mdma_mj - min(sizes_o_psychedelics_and_dissociatives_with_mdma_mj)) / 
+                                                        (max(sizes_o_psychedelics_and_dissociatives_with_mdma_mj) - min(sizes_o_psychedelics_and_dissociatives_with_mdma_mj))) * 
+                                                        (max_range - min_range) + min_range
+
+# Create data frame with dimensions and sizes
+labels_psychedelics_and_dissociatives_with_mdma_mj <- rownames(model3d_psychedelics_and_dissociatives_with_mdma_mj$conf)
+
+# Ensure that the sizes_o is properly matched with the correct labels
+sizes_o_psychedelics_and_dissociatives_with_mdma_mj <- sizes_o_psychedelics_and_dissociatives_with_mdma_mj[match(labels_psychedelics_and_dissociatives_with_mdma_mj, labels_psychedelics_and_dissociatives_with_mdma_mj)]
+
+# Now create the plot using plotly
+mds_df_psychedelics_and_dissociatives_with_mdma_mj <- data.frame(
+  Dim1 = model3d_psychedelics_and_dissociatives_with_mdma_mj$conf[, 1],
+  Dim2 = model3d_psychedelics_and_dissociatives_with_mdma_mj$conf[, 2],
+  Dim3 = model3d_psychedelics_and_dissociatives_with_mdma_mj$conf[, 3],
+  labels = labels_psychedelics_and_dissociatives_with_mdma_mj,
+  sizes = sizes_o_psychedelics_and_dissociatives_with_mdma_mj,
+  labels_factor = factor(labels_psychedelics_and_dissociatives_with_mdma_mj, levels = labels_psychedelics_and_dissociatives_with_mdma_mj)
+)
+
+# Plot the 3D scatter plot using plotly
+p_psychedelics_and_dissociatives_with_mdma_mj <- plot_ly()
+p_psychedelics_and_dissociatives_with_mdma_mj <- p_psychedelics_and_dissociatives_with_mdma_mj %>% add_trace(
+  data = mds_df_psychedelics_and_dissociatives_with_mdma_mj,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_psychedelics_and_dissociatives_with_mdma_mj],  # Apply colors only to the subset
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_psychedelics_and_dissociatives_with_mdma_mj <- p_psychedelics_and_dissociatives_with_mdma_mj %>% add_trace(
+  data = mds_df_psychedelics_and_dissociatives_with_mdma_mj,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_psychedelics_and_dissociatives_with_mdma_mj],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_psychedelics_and_dissociatives_with_mdma_mj <- p_psychedelics_and_dissociatives_with_mdma_mj %>% add_text(
+  data = mds_df_psychedelics_and_dissociatives_with_mdma_mj,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_psychedelics_and_dissociatives_with_mdma_mj <- p_psychedelics_and_dissociatives_with_mdma_mj %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Psychedelics and Dissociatives with MDMA & MJ \n (Stress =", stress_val_psychedelics_and_dissociatives_with_mdma_mj, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_psychedelics_and_dissociatives_with_mdma_mj
+
+
+#### Display the plots in order (2D first, then 3D)
+print(p5_pd_mdma_mj_baseline)
+
+## Perform 3D Multidimensional Scaling using dt_set_psychedelics_and_dissociatives_with_mdma_mj_baseline
+model3d_psychedelics_and_dissociatives_with_mdma_mj_baseline <- mds(dt_set_psychedelics_and_dissociatives_with_mdma_mj_baseline, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_psychedelics_and_dissociatives_with_mdma_mj_baseline <- round(model3d_psychedelics_and_dissociatives_with_mdma_mj_baseline$stress, 4)
+stress_val_psychedelics_and_dissociatives_with_mdma_mj_baseline
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_psychedelics_and_dissociatives_with_mdma_mj_baseline <- model3d_psychedelics_and_dissociatives_with_mdma_mj_baseline$spp
+# Apply square-root transformation to point sizes
+sizes_o_psychedelics_and_dissociatives_with_mdma_mj_baseline <- sqrt(sizes_o_psychedelics_and_dissociatives_with_mdma_mj_baseline)
+
+# Normalize point sizes for better visibility
+min_range <- 6
+max_range <- 16
+sizes_o_psychedelics_and_dissociatives_with_mdma_mj_baseline <- ((sizes_o_psychedelics_and_dissociatives_with_mdma_mj_baseline - min(sizes_o_psychedelics_and_dissociatives_with_mdma_mj_baseline)) / 
+                                                                (max(sizes_o_psychedelics_and_dissociatives_with_mdma_mj_baseline) - min(sizes_o_psychedelics_and_dissociatives_with_mdma_mj_baseline))) * 
+                                                                (max_range - min_range) + min_range
+
+# Create data frame with dimensions and sizes
+labels_psychedelics_and_dissociatives_with_mdma_mj_baseline <- rownames(model3d_psychedelics_and_dissociatives_with_mdma_mj_baseline$conf)
+
+# Ensure that the sizes_o is properly matched with the correct labels
+sizes_o_psychedelics_and_dissociatives_with_mdma_mj_baseline <- sizes_o_psychedelics_and_dissociatives_with_mdma_mj_baseline[match(labels_psychedelics_and_dissociatives_with_mdma_mj_baseline, labels_psychedelics_and_dissociatives_with_mdma_mj_baseline)]
+
+# Now create the plot using plotly
+mds_df_psychedelics_and_dissociatives_with_mdma_mj_baseline <- data.frame(
+  Dim1 = model3d_psychedelics_and_dissociatives_with_mdma_mj_baseline$conf[, 1],
+  Dim2 = model3d_psychedelics_and_dissociatives_with_mdma_mj_baseline$conf[, 2],
+  Dim3 = model3d_psychedelics_and_dissociatives_with_mdma_mj_baseline$conf[, 3],
+  labels = labels_psychedelics_and_dissociatives_with_mdma_mj_baseline,
+  sizes = sizes_o_psychedelics_and_dissociatives_with_mdma_mj_baseline,
+  labels_factor = factor(labels_psychedelics_and_dissociatives_with_mdma_mj_baseline, levels = labels_psychedelics_and_dissociatives_with_mdma_mj_baseline)
+)
+
+# Plot the 3D scatter plot using plotly
+p_psychedelics_and_dissociatives_with_mdma_mj_baseline <- plot_ly()
+p_psychedelics_and_dissociatives_with_mdma_mj_baseline <- p_psychedelics_and_dissociatives_with_mdma_mj_baseline %>% add_trace(
+  data = mds_df_psychedelics_and_dissociatives_with_mdma_mj_baseline,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_psychedelics_and_dissociatives_with_mdma_mj_baseline],  # Apply colors only to the subset
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_psychedelics_and_dissociatives_with_mdma_mj_baseline <- p_psychedelics_and_dissociatives_with_mdma_mj_baseline %>% add_trace(
+  data = mds_df_psychedelics_and_dissociatives_with_mdma_mj_baseline,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_psychedelics_and_dissociatives_with_mdma_mj_baseline],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_psychedelics_and_dissociatives_with_mdma_mj_baseline <- p_psychedelics_and_dissociatives_with_mdma_mj_baseline %>% add_text(
+  data = mds_df_psychedelics_and_dissociatives_with_mdma_mj_baseline,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_psychedelics_and_dissociatives_with_mdma_mj_baseline <- p_psychedelics_and_dissociatives_with_mdma_mj_baseline %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Psychedelics and Dissociatives with MDMA, MJ & Baseline \n (Stress =", stress_val_psychedelics_and_dissociatives_with_mdma_mj_baseline, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_psychedelics_and_dissociatives_with_mdma_mj_baseline
+
+```
+
+
+<br>
+<a name="S10"></a>
+&nbsp;
+
+**10. Stress values as a function of compared states**
+
+
+```{r, fig.width=10, fig.height=6}
+
+calculate_stress_values <- function(df) {
+  max_dims <- min(10, nrow(df) - 1)  # Max number of dimensions is number of rows - 1
+  stress_values <- c()
+  
+  for (dim in 1:max_dims) {
+    model <- mds(df, ndim = dim, type = "ordinal", init = "torgerson")
+    stress_values <- c(stress_values, round(model$stress, 4))
+  }
+  
+  # If fewer than 10 dimensions were calculated, fill remaining with NA
+  if (max_dims < 10) {
+    stress_values <- c(stress_values, rep(NA, 10 - max_dims))
+  }
+  
+  return(stress_values)
+}
+
+
+subject_stats <- data.frame(Subject = integer(), Num_Rows = integer(), Stress_1D = numeric(),
+                            Stress_2D = numeric(), Stress_3D = numeric(), Stress_4D = numeric(),
+                            Stress_5D = numeric(), Stress_6D = numeric(), Stress_7D = numeric(),
+                            Stress_8D = numeric(), Stress_9D = numeric(), Stress_10D = numeric())
+
+# Loop over all subjects
+for (i in 1:739) {  # Adjust the range based on the actual number of subjects
+  df_name <- paste0("df_", i)
+  
+  # Check if the dataframe for the subject exists
+  if (exists(df_name)) {
+    df <- get(df_name)  # Get the dataframe
+    
+    # Only process if there are at least 3 rows (minimum for 2D MDS)
+    if (nrow(df) >= 3) {  
+      stress_values <- calculate_stress_values(df)
+      subject_stats <- rbind(subject_stats, data.frame(Subject = i, Num_Rows = nrow(df),
+                                                       Stress_1D = stress_values[1],
+                                                       Stress_2D = stress_values[2],
+                                                       Stress_3D = stress_values[3],
+                                                       Stress_4D = stress_values[4],
+                                                       Stress_5D = stress_values[5],
+                                                       Stress_6D = stress_values[6],
+                                                       Stress_7D = stress_values[7],
+                                                       Stress_8D = stress_values[8],
+                                                       Stress_9D = stress_values[9],
+                                                       Stress_10D = stress_values[10]))
+    } else {
+      subject_stats <- rbind(subject_stats, data.frame(Subject = i, Num_Rows = nrow(df),
+                                                       Stress_1D = NA, Stress_2D = NA,
+                                                       Stress_3D = NA, Stress_4D = NA,
+                                                       Stress_5D = NA, Stress_6D = NA,
+                                                       Stress_7D = NA, Stress_8D = NA,
+                                                       Stress_9D = NA, Stress_10D = NA))
+    }
+  }
+}
+
+## View the subject_stats dataframe (Optional)
+#print(subject_stats)
+
+
+### General plot
+
+# Function to plot individual lines for each subject with a black line for the overall average
+plot_individual_stress_with_avg <- function(subject_stats, max_dims = 3) {
+  # Adjust max_dims to be within the available dimensions (1-10)
+  max_dims <- min(max_dims, 10)
+  
+  # Prepare the column names for stress dimensions based on max_dims
+  stress_columns <- paste0("Stress_", 1:max_dims, "D")
+  
+  # Reshape the data into a long format for plotting, only up to max_dims
+  subject_stats_melted <- melt(subject_stats, id.vars = c("Subject", "Num_Rows"),
+                               measure.vars = stress_columns,
+                               variable.name = "Dimension", value.name = "Stress")
+  
+  # Convert Dimension column to numeric, removing 'Stress_' and 'D'
+  subject_stats_melted$Dimension <- as.numeric(gsub("Stress_|D", "", subject_stats_melted$Dimension))
+  
+  # Calculate the average stress for each dimension, skipping NAs
+  avg_stress <- subject_stats_melted %>%
+    group_by(Dimension) %>%
+    summarize(Avg_Stress = mean(Stress, na.rm = TRUE))
+}
+
+# Example usage:
+plot_individual_stress_with_avg(subject_stats, max_dims = 6)
+
+
+### PLOT with lines colored according to the number of compared states
+
+# Function to plot individual lines for each subject with a black line for the overall average
+# Color by the number of non-NA stress values (number of dimensions available per subject)
+# Ensure that lines only plot up to the number of available dimensions (no NAs beyond that)
+plot_individual_stress_with_avg <- function(subject_stats, max_dims = 10) {
+  # Adjust max_dims to be within the available dimensions (1-10)
+  max_dims <- min(max_dims, 10)
+  
+  # Prepare the column names for stress dimensions based on max_dims
+  stress_columns <- paste0("Stress_", 1:max_dims, "D")
+  
+  # Reshape the data into a long format for plotting, only up to max_dims
+  subject_stats_melted <- melt(subject_stats, id.vars = c("Subject", "Num_Rows"),
+                               measure.vars = stress_columns,
+                               variable.name = "Dimension", value.name = "Stress")
+  
+  # Convert Dimension column to numeric, removing 'Stress_' and 'D'
+  subject_stats_melted$Dimension <- as.numeric(gsub("Stress_|D", "", subject_stats_melted$Dimension))
+  
+  # Filter out rows where Stress is NA (this ensures shorter lines for subjects with fewer valid dimensions)
+  subject_stats_melted <- subject_stats_melted %>% filter(!is.na(Stress))
+  
+  # Count the number of valid dimensions for each subject (used for color coding)
+  subject_stats_melted <- subject_stats_melted %>%
+    group_by(Subject) %>%
+    mutate(Non_NA_Dims = n())
+  
+  # Calculate the average stress for each dimension, skipping NAs
+  avg_stress <- subject_stats_melted %>%
+    group_by(Dimension) %>%
+    summarize(Avg_Stress = mean(Stress, na.rm = TRUE))
+  
+  # Plot individual lines for each subject, colored by the number of non-NA dimensions
+  ggplot() +
+    # Individual subject lines, more transparent with lower alpha
+    geom_line(data = subject_stats_melted, aes(x = Dimension, y = Stress, group = Subject, color = Non_NA_Dims),
+              alpha = 0.3, size = 0.8, na.rm = TRUE) +  # Lower alpha for more transparency
+    geom_point(data = subject_stats_melted, aes(x = Dimension, y = Stress, group = Subject, color = Non_NA_Dims),
+               size = 2, alpha = 0.3, na.rm = TRUE) +  # Lower alpha for points as well
+    # Overall average line in black, thicker
+    geom_line(data = avg_stress, aes(x = Dimension, y = Avg_Stress),
+              color = "black", size = 1.5, na.rm = TRUE) +
+    geom_point(data = avg_stress, aes(x = Dimension, y = Avg_Stress),
+               color = "black", size = 3, na.rm = TRUE) +
+    labs(
+      title = "Stress Values Across Models from Individual Subjects",
+      x = "Number of Dimensions",
+      y = "Stress"
+    ) +
+    scale_color_viridis_c(option = "viridis", name = "Available Dimensions \n (Compared States - 1)") +  # Use color to represent the number of dimensions
+    scale_x_continuous(breaks = 1:max_dims) +  # Ensure integer values on x-axis
+    theme_minimal() +
+    theme(
+      text = element_text(size = 14),
+      legend.position = "right"  # Show legend to denote number of dimensions
+    )
+}
+
+# Note that subjects with more than 11 compared states are represented as having at least 10 available dimensions
+
+# Example usage:
+# Plot the stress values with 10 dimensions
+plot_individual_stress_with_avg(subject_stats, max_dims = 10)
+
+```
+
+

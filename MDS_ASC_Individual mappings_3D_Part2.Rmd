@@ -1,0 +1,1263 @@
+---
+title: <font size="5"><strong> Mapping the space of altered states of consciousness - Individual Mappings 3D Part II </strong></font>
+author: <br> <font size="4"> Paweł Motyka </font> <br> pmotyka@psych.pan.pl  <br> 
+date: <font size="3"> April 2024  </font>
+output: html_document
+chunk_output_type: console
+--- 
+
+<font size="4">
+<br>
+&nbsp;
+
+**1. Load and aggregate data** 
+
+```{r, message = FALSE,  warning = FALSE, echo = FALSE}
+
+# Load required packages
+library(readxl)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(smacof)
+library(plotly)
+library(MASS)
+library(fitdistrplus)
+library(extremevalues)
+library(here)
+library(patchwork)
+library(scatterplot3d)
+library(rgl)
+library(grid)
+library(gridExtra)
+library(viridis)
+library(shapes)
+library(matrixStats)
+library(shiny)
+library(shinydashboard)
+library(andrews)
+library(pheatmap)
+library(smacof)
+library(reshape2)
+
+
+# Set working directory
+mds_dir <- here::here()
+
+# Load data
+df_full  <- read.csv(file = paste0(mds_dir,"/MDS_ASC_data"), sep = "\t", header = TRUE, quote = "\"")
+
+# Basic demographic stats before filtering
+df_full %>%
+  summarise(
+    Number_of_Participants = n(),
+    Mean_Age = mean(Age, na.rm = TRUE),
+    SD_Age = sd(Age, na.rm = TRUE),
+    Male_Participants = sum(Gender == "Man"),
+    Female_Participants = sum(Gender == "Woman"),
+    Other_Participants = sum(Gender == "Other")
+  ) %>%
+  print()
+
+## Perform exclusions according to the preregistered criteria
+
+#(1) Average response time per dissimilarity rating below 2 seconds
+#hist(df_full$time_per_subs, breaks = 100)
+cat("Response time above 2s:", sum(df_full$time_per_subs < 2, na.rm = TRUE), "\n")
+df_filtered <- filter(df_full,  time_per_subs > 2)
+
+
+#(2) Inaccurate responses to the two control questions
+
+# Test 1
+# hist(df_filtered$test1, breaks = 100, xlim = c(0,100), ylim = c(0,50))
+cat("Uncorrect response to test1:", sum(df_filtered$test1 < 99, na.rm = TRUE), "\n")
+df_filtered <- filter(df_filtered,  test1 >= 99) 
+
+# Test2
+# hist(df_filtered$test2, breaks = 100, xlim = c(0,7), ylim = c(0,100))
+cat("Uncorrect response to test2:", sum(df_filtered$test2 > 1, na.rm = TRUE), "\n")
+df_filtered <- filter(df_filtered,  test2 <= 1) # liberal (2nd step)
+
+# Recode ID variable
+df_filtered$ID <- 1:length(df_filtered$ID)
+
+# Basic demographic stats after filtering
+df_filtered %>%
+  summarise(
+    Number_of_Participants = n(),
+    Male = sum(Gender == "Man"),
+    Female = sum(Gender == "Woman"),
+    Other = sum(Gender == "Other"),
+    Mean_Age = mean(Age, na.rm = TRUE),
+    SD_Age = sd(Age, na.rm = TRUE),
+  ) %>%
+  print()
+
+colnames(df_filtered) <- gsub("X2CB", "2CB", colnames(df_filtered))
+
+# Define substance codes
+substance_codes <- c("Baseline", "Alc", "MJ", "MDMA", "Amf", "LSD", "Psy", "Mef", "Coc", 
+                     "Alp", "Ket", "DMT", "N2O", "DXM", "Cod", "Tra", "Her", "Salv", 
+                     "GHB", "Dat", "Ben", "2CB", "Diph")
+
+# Create all combinations of substance codes
+combinations <- expand.grid(Var1 = substance_codes, Var2 = substance_codes, stringsAsFactors = FALSE)
+combinations <- subset(combinations, Var1 != Var2)
+combinations <- subset(combinations, Var1 < Var2)
+column_names <- apply(combinations, 1, function(x) paste(x, collapse = "_"))
+
+
+# Loop through each subject's data
+for (i in as.numeric(df_filtered$ID)) {
+  subject_id <- i
+  
+  # Extract data for the current subject
+  subject_data <- df_filtered[df_filtered$ID == subject_id, ]
+  
+  # Create a data frame with substance codes as both rows and columns
+  subject_df <- data.frame(matrix(NA, nrow = length(substance_codes), ncol = length(substance_codes),dimnames = list(substance_codes, substance_codes)))
+  
+colnames(subject_df) <- substance_codes
+rownames(subject_df) <- substance_codes
+  
+  # Populate the data frame with values from the corresponding columns
+  for (code1 in substance_codes) {
+    for (code2 in substance_codes) {
+      col_name1 <- paste(code1, code2, sep = "")
+      col_name2 <- paste(code2, code1, sep = "")
+      if (col_name1 != col_name2) {
+        
+        if (!is.na(subject_data[[col_name1]])) {
+          subject_df[code1, code2] <- subject_data[[col_name1]]
+          subject_df[code2, code1] <- subject_data[[col_name1]]
+          
+        } else if (!is.na(subject_data[[col_name2]])) {
+          subject_df[code1, code2] <- subject_data[[col_name2]]
+          subject_df[code2, code1] <- subject_data[[col_name2]]
+        }
+      }
+    }
+  }
+  
+  # Assign the subject's data frame to the global environment with a unique name
+  assign(paste("df_", subject_id, sep = ""), subject_df, envir = .GlobalEnv)
+}
+
+# Remove redundant file
+rm(subject_df)
+rm(subject_data)
+
+# Create a list of all individual data frames
+list_df <- lapply(as.numeric(df_filtered$ID), function(i) {
+  df_name <- paste("df_", i, sep = "")
+  if (exists(df_name, envir = .GlobalEnv)) {
+    get(df_name)
+  } else {
+    NULL
+  }
+})
+
+## Derive averaged dissimilarity ratings and number of comparisons
+
+# Initialization of empty arrays
+comparisons_n <- matrix(0, nrow = ncol(list_df[[1]]), ncol = ncol(list_df[[1]]))
+dt_23 <- comparisons_n
+
+# Calculating average values and number of comparisons
+for (i in 1:length(list_df)) {
+  df <- list_df[[i]]
+  comparisons_n[!is.na(df)] <- comparisons_n[!is.na(df)] + 1
+  dt_23[!is.na(df)] <- dt_23[!is.na(df)] + as.numeric(df[!is.na(df)])
+}
+dt_23 <- dt_23 / comparisons_n
+
+# Adding names to rows and columns
+colnames(dt_23) <- substance_codes
+rownames(dt_23) <- substance_codes
+colnames(comparisons_n) <- substance_codes
+rownames(comparisons_n) <- substance_codes
+
+# Save the final matrix
+dt <- dt_23
+rm(df)
+
+# Remove states without the expected number of obtained ratings (Diphenidine,Datura,Benzydamine)
+dt <- dt[!(rownames(dt) %in% c("Diph", "Dat","Ben")), ]
+dt <- dt[, !(colnames(dt) %in% c("Diph", "Dat","Ben"))]
+
+
+
+# Reduce individual DFs to only present substances
+for (i in 1:length(list_df)) {
+  # Define the data frame name dynamically
+  df_name <- paste("df_", i, sep = "")
+  
+  # Access the data frame using get() and the dynamic name
+  df_i <- get(df_name)
+  
+  # Identify rows and columns with all NAs
+  rows_with_all_nas <- which(apply(is.na(df_i), 1, all))
+  cols_with_all_nas <- which(apply(is.na(df_i), 2, all))
+  
+  # Remove rows and columns with all NAs
+  df_i <- df_i[-rows_with_all_nas, -cols_with_all_nas]
+  
+  # Update the data frame in the global environment
+  assign(df_name, df_i)
+}
+
+# Replace NAs with 0 in individual reduced DFs
+for (i in 1:length(list_df)) {
+  # Define the data frame name dynamically
+  df_name <- paste("df_", i, sep = "")
+  
+  # Access the data frame using get() and the dynamic name
+  df_i <- get(df_name)
+
+  # Replace NA values with 0
+  df_i[is.na(df_i)] <- 0
+  
+  # Update the data frame in the global environment
+  assign(df_name, df_i)
+}
+
+# Extract vectors with values for unique comparisons and save in a data frame
+# Initialize an empty data frame for results
+results_df <- data.frame(Comparison = character(0), stringsAsFactors = FALSE)
+
+# Loop through unique substance code pairs
+for (substance1 in substance_codes) {
+  for (substance2 in substance_codes) {
+    if (substance1 != substance2) {  # Avoid self-comparisons
+      # Create a column name for the comparison
+      col_name <- paste(substance1, "_vs_", substance2, sep = "")
+      
+      # Initialize a vector to store comparison values
+      comparison_values <- character(0)
+      
+      # Loop through individual data frames
+      for (i in 1:length(list_df)) {
+        # Access the data frame by name
+        df_name <- paste("df_", i, sep = "")
+        df_i <- get(df_name)
+        
+        # Check if substances exist in the data frame
+        if (substance1 %in% rownames(df_i) && substance2 %in% colnames(df_i)) {
+          # Extract the dissimilarity value
+          value <- df_i[substance1, substance2]
+          comparison_values <- c(comparison_values, value)
+        } else {
+          # Use NA if comparison doesn't exist
+          comparison_values <- c(comparison_values, NA)
+        }
+      }
+      
+      # Create and add a row for this comparison
+      comparison_row <- data.frame(Comparison = col_name, t(comparison_values))
+      results_df <- rbind(results_df, comparison_row)
+    }
+  }
+}
+
+# Reduce symmetric rows (e.g. Alk_Kod, Kod_Alk)
+# Initialize a new data frame for reduced results
+results_df_reduced <- data.frame(Comparison = character(0), stringsAsFactors = FALSE)
+
+# Track unique comparisons
+unique_comparisons <- character(0)
+
+# Loop through rows in the original results_df
+for (i in 1:nrow(results_df)) {
+  current_comparison <- results_df$Comparison[i]
+  
+  # Check if symmetric comparison exists
+  symmetric_comparison <- paste(rev(unlist(strsplit(current_comparison, "_vs_"))), collapse = "_vs_")
+  
+  if (!(symmetric_comparison %in% unique_comparisons)) {
+    # Add new unique comparison
+    unique_comparisons <- c(unique_comparisons, current_comparison)
+    results_df_reduced  <- rbind(results_df_reduced , results_df[i, ])
+  }
+}
+
+# View the reduced results data frame
+View(results_df_reduced)
+ds <- results_df_reduced
+col_num <- ncol(ds) # original number of columns
+
+# Convert columns to numeric
+ds[, 2:col_num] <- sapply(ds[, 2:col_num], as.numeric)
+
+# Calculate mean dissimilarity and variance
+ds$mean_dissimilarity <- rowMeans(ds[2:col_num], na.rm = TRUE)
+ds$variance <- apply(ds[2:col_num], 1, sd, na.rm = TRUE)
+
+codes <- substance_codes
+
+# Initialize data frame for substance-related variables
+dss <- data.frame(state = codes, mean_dissimilarity = 0, variance = 0)
+
+# Aggregate data for each substance code
+for (code in codes) {
+  # Find rows in "ds" where the Comparison column contains the code
+  matching_rows <- ds[grep(code, ds$Comparison), ]
+  
+  # Calculate mean and standard deviation, excluding NA and NaN
+  mean_value <- mean(matching_rows$mean_dissimilarity, na.rm = TRUE)
+  sd_value <- mean(matching_rows$variance, na.rm = TRUE)
+  
+  # Update the aggregated data frame
+  dss[dss$state == code, "mean_dissimilarity"] <- mean_value
+  dss[dss$state == code, "variance"] <- sd_value
+}
+
+# Add dissimilarity to baseline variable
+dsb <- ds[c(1:22),]
+dsb$Comparison <- sub("Baseline_vs_", "", dsb$Comparison)
+names(dsb)[names(dsb) == "Comparison"] <- "state"
+
+# Calculate dissimilarity to baseline
+dsb$dissimilarity_to_baseline <- rowMeans(dsb[2:col_num], na.rm = TRUE)
+new_row <- data.frame(state = "Baseline", dissimilarity_to_baseline = 0)
+dsb <- dsb[,c(1, 743)]
+dsb <- rbind(dsb, new_row)
+dss <- left_join(dss, dsb)
+
+# Add confidence ratings
+dc <- df_filtered
+dc <- dc[, 538:560] # confidence ratings
+colnames(dc) <- sub("Conf.*$", "", colnames(dc))
+dc <- sapply(dc, as.numeric)
+col_means <- colMeans(dc, na.rm = TRUE) # calculate mean confidence for each substance from all subjects
+col_vars <- sqrt(colVars(dc, na.rm = TRUE))# calculate variance of confidence ratings
+
+# Convert the result into a new row and add it to the data frame
+dc <- rbind(dc, col_means, col_vars)
+
+```
+
+
+<br>
+&nbsp;
+
+
+**2. 3D MDS mappings for individual subjects (with the maximum number of compared states)**
+
+```{r, fig.width=8, fig.height=8, echo = FALSE}
+
+## This section exports individual 3D Plotly plots without using a loop, which explains its length
+
+# Color scheme and rotation functions remain the same as before
+point_col <- c(
+  Baseline = "#2B2B2B", Alc = "#8A99BF", MJ = "#327D43", MDMA = "#7B3894",
+  Amf = "#8B2B2B", LSD = "#5998BA", Psy = "#5DADB3", Mef = "#A23E71",
+  Coc = "#BF436E", Alp = "#6B86B0", Ket = "#505CB9", DMT = "#108BB8",
+  N2O = "#6861C7", DXM = "#7A65A8", Cod = "#ACA232", Tra = "#AC845F",
+  Her = "#755B28", Salv = "#AFA0BD", GHB = "#617991", `2CB` = "#6AA4BA",
+  Diph = "#6841be", Ben = "yellow4", Dat = "darkolivegreen3"
+)
+
+# Initialize the simplified dataframe
+subject_stats <- data.frame(Subject = integer(), Num_Rows = integer())
+
+# Loop over all subjects
+for (i in 1:739) {  # Adjust the range based on the actual number of subjects
+  df_name <- paste0("df_", i)
+  
+  # Check if the dataframe for the subject exists
+  if (exists(df_name)) {
+    df <- get(df_name)  # Get the dataframe
+    
+    # Only add if there are at least 3 rows (minimum for analysis)
+    if (nrow(df) >= 3) {  
+      subject_stats <- rbind(subject_stats, data.frame(Subject = i, Num_Rows = nrow(df)))
+    }
+  }
+}
+
+# View the subject_stats dataframe (optional)
+#print(subject_stats)
+
+
+# Filter rows where Num_Rows is equal to 16 and extract the "Subject" column
+subjects_with_16 <- subject_stats[subject_stats$Num_Rows == 16, "Subject"]
+
+# Convert it into a vector
+subjects_with_16_vector <- as.vector(subjects_with_16)
+
+# Color scheme (as before)
+point_col <- c(
+  Baseline = "#2B2B2B", Alc = "#8A99BF", MJ = "#327D43", MDMA = "#7B3894",
+  Amf = "#8B2B2B", LSD = "#5998BA", Psy = "#5DADB3", Mef = "#A23E71",
+  Coc = "#BF436E", Alp = "#6B86B0", Ket = "#505CB9", DMT = "#108BB8",
+  N2O = "#6861C7", DXM = "#7A65A8", Cod = "#ACA232", Tra = "#AC845F",
+  Her = "#755B28", Salv = "#AFA0BD", GHB = "#617991", `2CB` = "#6AA4BA",
+  Diph = "#6841be", Ben = "yellow4", Dat = "darkolivegreen3"
+)
+
+## Perform 3D Multidimensional Scaling using df_578
+model3d_578 <- mds(df_578, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_578 <- round(model3d_578$stress, 4)
+stress_val_578
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_578 <- model3d_578$spp
+sizes_o_578 <- sqrt(sizes_o_578)
+min_range <- 6
+max_range <- 16
+sizes_o_578 <- ((sizes_o_578 - min(sizes_o_578)) / (max(sizes_o_578) - min(sizes_o_578))) * (max_range - min_range) + min_range
+labels_578 <- rownames(model3d_578$conf)
+sizes_o_578 <- sizes_o_578[match(labels_578, labels_578)]
+
+mds_df_578 <- data.frame(
+  Dim1 = model3d_578$conf[, 1],
+  Dim2 = model3d_578$conf[, 2],
+  Dim3 = model3d_578$conf[, 3],
+  labels = labels_578,
+  sizes = sizes_o_578,
+  labels_factor = factor(labels_578, levels = labels_578)
+)
+
+p_578 <- plot_ly()
+p_578 <- p_578 %>% add_trace(
+  data = mds_df_578,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_578],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_578 <- p_578 %>% add_trace(
+  data = mds_df_578,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_578],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_578 <- p_578 %>% add_text(
+  data = mds_df_578,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_578 <- p_578 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 578 (Stress =", stress_val_578, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_578
+
+
+## Perform 3D Multidimensional Scaling using df_588
+model3d_588 <- mds(df_588, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_588 <- round(model3d_588$stress, 4)
+stress_val_588
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_588 <- model3d_588$spp
+sizes_o_588 <- sqrt(sizes_o_588)
+min_range <- 6
+max_range <- 16
+sizes_o_588 <- ((sizes_o_588 - min(sizes_o_588)) / (max(sizes_o_588) - min(sizes_o_588))) * (max_range - min_range) + min_range
+labels_588 <- rownames(model3d_588$conf)
+sizes_o_588 <- sizes_o_588[match(labels_588, labels_588)]
+
+mds_df_588 <- data.frame(
+  Dim1 = model3d_588$conf[, 1],
+  Dim2 = model3d_588$conf[, 2],
+  Dim3 = model3d_588$conf[, 3],
+  labels = labels_588,
+  sizes = sizes_o_588,
+  labels_factor = factor(labels_588, levels = labels_588)
+)
+
+p_588 <- plot_ly()
+p_588 <- p_588 %>% add_trace(
+  data = mds_df_588,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_588],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_588 <- p_588 %>% add_trace(
+  data = mds_df_588,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_588],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_588 <- p_588 %>% add_text(
+  data = mds_df_588,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_588 <- p_588 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 588 (Stress =", stress_val_588, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_588
+
+
+## Perform 3D Multidimensional Scaling using df_663
+model3d_663 <- mds(df_663, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_663 <- round(model3d_663$stress, 4)
+stress_val_663
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_663 <- model3d_663$spp
+sizes_o_663 <- sqrt(sizes_o_663)
+min_range <- 6
+max_range <- 16
+sizes_o_663 <- ((sizes_o_663 - min(sizes_o_663)) / (max(sizes_o_663) - min(sizes_o_663))) * (max_range - min_range) + min_range
+labels_663 <- rownames(model3d_663$conf)
+sizes_o_663 <- sizes_o_663[match(labels_663, labels_663)]
+
+mds_df_663 <- data.frame(
+  Dim1 = model3d_663$conf[, 1],
+  Dim2 = model3d_663$conf[, 2],
+  Dim3 = model3d_663$conf[, 3],
+  labels = labels_663,
+  sizes = sizes_o_663,
+  labels_factor = factor(labels_663, levels = labels_663)
+)
+
+p_663 <- plot_ly()
+p_663 <- p_663 %>% add_trace(
+  data = mds_df_663,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_663],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_663 <- p_663 %>% add_trace(
+  data = mds_df_663,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_663],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_663 <- p_663 %>% add_text(
+  data = mds_df_663,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_663 <- p_663 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 663 (Stress =", stress_val_663, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_663
+
+
+## Perform 3D Multidimensional Scaling using df_671
+model3d_671 <- mds(df_671, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_671 <- round(model3d_671$stress, 4)
+stress_val_671
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_671 <- model3d_671$spp
+sizes_o_671 <- sqrt(sizes_o_671)
+min_range <- 6
+max_range <- 16
+sizes_o_671 <- ((sizes_o_671 - min(sizes_o_671)) / (max(sizes_o_671) - min(sizes_o_671))) * (max_range - min_range) + min_range
+labels_671 <- rownames(model3d_671$conf)
+sizes_o_671 <- sizes_o_671[match(labels_671, labels_671)]
+
+mds_df_671 <- data.frame(
+  Dim1 = model3d_671$conf[, 1],
+  Dim2 = model3d_671$conf[, 2],
+  Dim3 = model3d_671$conf[, 3],
+  labels = labels_671,
+  sizes = sizes_o_671,
+  labels_factor = factor(labels_671, levels = labels_671)
+)
+
+p_671 <- plot_ly()
+p_671 <- p_671 %>% add_trace(
+  data = mds_df_671,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_671],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_671 <- p_671 %>% add_trace(
+  data = mds_df_671,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_671],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_671 <- p_671 %>% add_text(
+  data = mds_df_671,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_671 <- p_671 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 671 (Stress =", stress_val_671, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_671
+
+
+## Perform 3D Multidimensional Scaling using df_682
+model3d_682 <- mds(df_682, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_682 <- round(model3d_682$stress, 4)
+stress_val_682
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_682 <- model3d_682$spp
+sizes_o_682 <- sqrt(sizes_o_682)
+min_range <- 6
+max_range <- 16
+sizes_o_682 <- ((sizes_o_682 - min(sizes_o_682)) / (max(sizes_o_682) - min(sizes_o_682))) * (max_range - min_range) + min_range
+labels_682 <- rownames(model3d_682$conf)
+sizes_o_682 <- sizes_o_682[match(labels_682, labels_682)]
+
+mds_df_682 <- data.frame(
+  Dim1 = model3d_682$conf[, 1],
+  Dim2 = model3d_682$conf[, 2],
+  Dim3 = model3d_682$conf[, 3],
+  labels = labels_682,
+  sizes = sizes_o_682,
+  labels_factor = factor(labels_682, levels = labels_682)
+)
+
+p_682 <- plot_ly()
+p_682 <- p_682 %>% add_trace(
+  data = mds_df_682,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_682],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_682 <- p_682 %>% add_trace(
+  data = mds_df_682,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_682],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_682 <- p_682 %>% add_text(
+  data = mds_df_682,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_682 <- p_682 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 682 (Stress =", stress_val_682, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_682
+
+
+## Perform 3D Multidimensional Scaling using df_685
+model3d_685 <- mds(df_685, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_685 <- round(model3d_685$stress, 4)
+stress_val_685
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_685 <- model3d_685$spp
+sizes_o_685 <- sqrt(sizes_o_685)
+min_range <- 6
+max_range <- 16
+sizes_o_685 <- ((sizes_o_685 - min(sizes_o_685)) / (max(sizes_o_685) - min(sizes_o_685))) * (max_range - min_range) + min_range
+labels_685 <- rownames(model3d_685$conf)
+sizes_o_685 <- sizes_o_685[match(labels_685, labels_685)]
+
+mds_df_685 <- data.frame(
+  Dim1 = model3d_685$conf[, 1],
+  Dim2 = model3d_685$conf[, 2],
+  Dim3 = model3d_685$conf[, 3],
+  labels = labels_685,
+  sizes = sizes_o_685,
+  labels_factor = factor(labels_685, levels = labels_685)
+)
+
+p_685 <- plot_ly()
+p_685 <- p_685 %>% add_trace(
+  data = mds_df_685,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_685],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_685 <- p_685 %>% add_trace(
+  data = mds_df_685,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_685],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_685 <- p_685 %>% add_text(
+  data = mds_df_685,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_685 <- p_685 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 685 (Stress =", stress_val_685, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_685
+
+
+## Perform 3D Multidimensional Scaling using df_687
+model3d_687 <- mds(df_687, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_687 <- round(model3d_687$stress, 4)
+stress_val_687
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_687 <- model3d_687$spp
+sizes_o_687 <- sqrt(sizes_o_687)
+min_range <- 6
+max_range <- 16
+sizes_o_687 <- ((sizes_o_687 - min(sizes_o_687)) / (max(sizes_o_687) - min(sizes_o_687))) * (max_range - min_range) + min_range
+labels_687 <- rownames(model3d_687$conf)
+sizes_o_687 <- sizes_o_687[match(labels_687, labels_687)]
+
+mds_df_687 <- data.frame(
+  Dim1 = model3d_687$conf[, 1],
+  Dim2 = model3d_687$conf[, 2],
+  Dim3 = model3d_687$conf[, 3],
+  labels = labels_687,
+  sizes = sizes_o_687,
+  labels_factor = factor(labels_687, levels = labels_687)
+)
+
+p_687 <- plot_ly()
+p_687 <- p_687 %>% add_trace(
+  data = mds_df_687,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_687],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_687 <- p_687 %>% add_trace(
+  data = mds_df_687,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_687],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_687 <- p_687 %>% add_text(
+  data = mds_df_687,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_687 <- p_687 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 687 (Stress =", stress_val_687, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_687
+
+
+## Perform 3D Multidimensional Scaling using df_691
+model3d_691 <- mds(df_691, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_691 <- round(model3d_691$stress, 4)
+stress_val_691
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_691 <- model3d_691$spp
+sizes_o_691 <- sqrt(sizes_o_691)
+min_range <- 6
+max_range <- 16
+sizes_o_691 <- ((sizes_o_691 - min(sizes_o_691)) / (max(sizes_o_691) - min(sizes_o_691))) * (max_range - min_range) + min_range
+labels_691 <- rownames(model3d_691$conf)
+sizes_o_691 <- sizes_o_691[match(labels_691, labels_691)]
+
+mds_df_691 <- data.frame(
+  Dim1 = model3d_691$conf[, 1],
+  Dim2 = model3d_691$conf[, 2],
+  Dim3 = model3d_691$conf[, 3],
+  labels = labels_691,
+  sizes = sizes_o_691,
+  labels_factor = factor(labels_691, levels = labels_691)
+)
+
+p_691 <- plot_ly()
+p_691 <- p_691 %>% add_trace(
+  data = mds_df_691,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_691],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_691 <- p_691 %>% add_trace(
+  data = mds_df_691,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_691],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_691 <- p_691 %>% add_text(
+  data = mds_df_691,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_691 <- p_691 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 691 (Stress =", stress_val_691, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_691
+
+
+## Perform 3D Multidimensional Scaling using df_731
+model3d_731 <- mds(df_731, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_731 <- round(model3d_731$stress, 4)
+stress_val_731
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_731 <- model3d_731$spp
+sizes_o_731 <- sqrt(sizes_o_731)
+min_range <- 6
+max_range <- 16
+sizes_o_731 <- ((sizes_o_731 - min(sizes_o_731)) / (max(sizes_o_731) - min(sizes_o_731))) * (max_range - min_range) + min_range
+labels_731 <- rownames(model3d_731$conf)
+sizes_o_731 <- sizes_o_731[match(labels_731, labels_731)]
+
+mds_df_731 <- data.frame(
+  Dim1 = model3d_731$conf[, 1],
+  Dim2 = model3d_731$conf[, 2],
+  Dim3 = model3d_731$conf[, 3],
+  labels = labels_731,
+  sizes = sizes_o_731,
+  labels_factor = factor(labels_731, levels = labels_731)
+)
+
+p_731 <- plot_ly()
+p_731 <- p_731 %>% add_trace(
+  data = mds_df_731,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_731],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_731 <- p_731 %>% add_trace(
+  data = mds_df_731,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_731],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_731 <- p_731 %>% add_text(
+  data = mds_df_731,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_731 <- p_731 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 731 (Stress =", stress_val_731, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_731
+
+
+## Perform 3D Multidimensional Scaling using df_732
+model3d_732 <- mds(df_732, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_732 <- round(model3d_732$stress, 4)
+stress_val_732
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_732 <- model3d_732$spp
+sizes_o_732 <- sqrt(sizes_o_732)
+min_range <- 6
+max_range <- 16
+sizes_o_732 <- ((sizes_o_732 - min(sizes_o_732)) / (max(sizes_o_732) - min(sizes_o_732))) * (max_range - min_range) + min_range
+labels_732 <- rownames(model3d_732$conf)
+sizes_o_732 <- sizes_o_732[match(labels_732, labels_732)]
+
+mds_df_732 <- data.frame(
+  Dim1 = model3d_732$conf[, 1],
+  Dim2 = model3d_732$conf[, 2],
+  Dim3 = model3d_732$conf[, 3],
+  labels = labels_732,
+  sizes = sizes_o_732,
+  labels_factor = factor(labels_732, levels = labels_732)
+)
+
+p_732 <- plot_ly()
+p_732 <- p_732 %>% add_trace(
+  data = mds_df_732,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_732],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_732 <- p_732 %>% add_trace(
+  data = mds_df_732,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_732],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_732 <- p_732 %>% add_text(
+  data = mds_df_732,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_732 <- p_732 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 732 (Stress =", stress_val_732, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_732
+
+
+## Perform 3D Multidimensional Scaling using df_737
+model3d_737 <- mds(df_737, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_737 <- round(model3d_737$stress, 4)
+stress_val_737
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_737 <- model3d_737$spp
+sizes_o_737 <- sqrt(sizes_o_737)
+min_range <- 6
+max_range <- 16
+sizes_o_737 <- ((sizes_o_737 - min(sizes_o_737)) / (max(sizes_o_737) - min(sizes_o_737))) * (max_range - min_range) + min_range
+labels_737 <- rownames(model3d_737$conf)
+sizes_o_737 <- sizes_o_737[match(labels_737, labels_737)]
+
+mds_df_737 <- data.frame(
+  Dim1 = model3d_737$conf[, 1],
+  Dim2 = model3d_737$conf[, 2],
+  Dim3 = model3d_737$conf[, 3],
+  labels = labels_737,
+  sizes = sizes_o_737,
+  labels_factor = factor(labels_737, levels = labels_737)
+)
+
+p_737 <- plot_ly()
+p_737 <- p_737 %>% add_trace(
+  data = mds_df_737,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_737],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_737 <- p_737 %>% add_trace(
+  data = mds_df_737,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_737],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_737 <- p_737 %>% add_text(
+  data = mds_df_737,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_737 <- p_737 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 737 (Stress =", stress_val_737, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_737
+
+
+## Perform 3D Multidimensional Scaling using df_739
+model3d_739 <- mds(df_739, ndim = 3, type = "ordinal", init = "torgerson")
+# Calculate and display stress value
+stress_val_739 <- round(model3d_739$stress, 4)
+stress_val_739
+
+### Create an interactive 3D scatter plot with stress-wise sizing of individual points
+sizes_o_739 <- model3d_739$spp
+sizes_o_739 <- sqrt(sizes_o_739)
+min_range <- 6
+max_range <- 16
+sizes_o_739 <- ((sizes_o_739 - min(sizes_o_739)) / (max(sizes_o_739) - min(sizes_o_739))) * (max_range - min_range) + min_range
+labels_739 <- rownames(model3d_739$conf)
+sizes_o_739 <- sizes_o_739[match(labels_739, labels_739)]
+
+mds_df_739 <- data.frame(
+  Dim1 = model3d_739$conf[, 1],
+  Dim2 = model3d_739$conf[, 2],
+  Dim3 = model3d_739$conf[, 3],
+  labels = labels_739,
+  sizes = sizes_o_739,
+  labels_factor = factor(labels_739, levels = labels_739)
+)
+
+p_739 <- plot_ly()
+p_739 <- p_739 %>% add_trace(
+  data = mds_df_739,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_739],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = ~sizes, sizemode = 'diameter', opacity = 0.3),
+  showlegend = FALSE
+)
+p_739 <- p_739 %>% add_trace(
+  data = mds_df_739,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  color = ~labels_factor,
+  colors = point_col[labels_739],
+  type = 'scatter3d',
+  mode = 'markers',
+  marker = list(size = 5, sizemode = 'diameter'),
+  name = ~labels_factor
+)
+p_739 <- p_739 %>% add_text(
+  data = mds_df_739,
+  x = ~Dim1, y = ~Dim2, z = ~Dim3,
+  text = ~labels,
+  textposition = "bottom center",
+  showlegend = FALSE,
+  color = I("black")
+)
+p_739 <- p_739 %>% layout(
+  scene = list(
+    xaxis = list(title = 'Dim1', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    yaxis = list(title = 'Dim2', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    zaxis = list(title = 'Dim3', titlefont = list(size = 16, family = "Arial", weight = "bold")),
+    aspectmode = "cube"
+  ),
+  title = paste("3D MDS - Subject 739 (Stress =", stress_val_739, ")"),
+  legend = list(
+    traceorder = "normal",
+    itemsizing = "constant",
+    font = list(size = 12)
+  )
+)
+
+# Display the 3D plot
+p_739
+
+```
+
