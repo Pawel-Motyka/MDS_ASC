@@ -28,6 +28,8 @@ Altered states of consciousness, dimensions of consciousness, multidimensional s
 
 The folder “_data” will contain both raw data files for each subject and the preprocessed data frames. The relevant data frames will be automatically read while running individual code files.
 
+The research was supported by the National Science Centre, Poland (Sonatina grant number 2022/44/C/HS6/00068; to PM)
+
 The folder “_figures” will contain the main and supplementary plots.
 
 R Markdown reports (HTML files) present all the code files used along with their outputs.
